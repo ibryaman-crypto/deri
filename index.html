@@ -3082,12 +3082,17 @@ function ekranSevkiyatListesi() {
           ${a.etiket}</button>`).join('')}
     </div>`;
 
+  const secModu = state._birlestirmeModu;
+  const secili = state._birlestirmeSecim || new Set();
+
   const liste = sevk.map(s => {
     const onayli = s.kontrolDurumu === 'onaylandi';
     const kgSayi = (s.deriler||[]).filter(sevkiyatDeriKontrolGerekli).length;
+    const isSec = secili.has(s.fsId);
+    const tikla = secModu ? `gecmisSecimToggle('${s.fsId}')` : `sevkiyatDetayAc('${s.fsId}')`;
     return `
-    <div class="shipment-item" onclick="sevkiyatDetayAc('${s.fsId}')" ${kgSayi ? 'style="border-left:3px solid var(--red)"' : ''}>
-      <div class="header"><span class="no">${s.sevkiyatNo}</span><span class="date">${tarihKisa(s.tarih)}</span></div>
+    <div class="shipment-item" onclick="${tikla}" style="${kgSayi ? 'border-left:3px solid var(--red);' : ''}${isSec ? 'background:var(--gold-soft,#fef6e4);outline:2px solid var(--gold)' : ''}">
+      <div class="header"><span class="no">${secModu ? (isSec?'☑ ':'☐ ') : ''}${s.sevkiyatNo}${s.birlesmis ? ' <span style="font-size:10px;color:var(--leather)">🔗</span>' : ''}</span><span class="date">${tarihKisa(s.tarih)}</span></div>
       <div class="customer">${escapeHtml(s.musteriAd||'')} ${onayli ? '<span style="font-size:11px;color:var(--green);font-weight:700">✓ Onaylı</span>' : '<span style="font-size:11px;color:var(--amber);font-weight:700">⏳ Bekliyor</span>'} ${kgSayi ? `<span style="font-size:11px;color:var(--red);font-weight:700">⚠ ${kgSayi} kontrol</span>` : ''}</div>
       <div class="totals">
         <span>📦 ${(s.deriler||[]).length} paket</span>
@@ -3099,14 +3104,100 @@ function ekranSevkiyatListesi() {
 
   return `
     <div class="topbar">
-      <button onclick="geriDon();" style="font-size:13px">‹ Geri</button>
-      <div class="brand">Geçmiş</div>
-      <div style="width:80px"></div>
+      <button onclick="${secModu ? 'gecmisBirlestirmeModu()' : 'geriDon()'};" style="font-size:13px">${secModu ? '✕ Vazgeç' : '‹ Geri'}</button>
+      <div class="brand">${secModu ? 'Birleştir' : 'Geçmiş'}</div>
+      <button onclick="gecmisBirlestirmeModu()" style="font-size:12px;padding:6px 10px;${secModu?'':'background:var(--gold-soft,#fef6e4);border-radius:8px'}">${secModu ? '' : '🔗 Birleştir'}</button>
     </div>
-    <div class="content">
-      ${araBar}
+    <div class="content" style="${secModu ? 'padding-bottom:80px' : ''}">
+      ${secModu ? '<div style="background:var(--gold-soft,#fef6e4);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">Aynı müşteriye giden 2+ sevkiyat seçin — tek irsaliyede birleşecek.</div>' : araBar}
       ${sevk.length === 0 ? `<div class="empty"><div class="icon">⎙</div><div>Bu aralıkta sevkiyat yok</div></div>` : `<div class="section-title">${sevk.length} sevkiyat</div>${liste}`}
+    </div>
+    ${secModu && secili.size >= 2 ? `<div class="bottom-bar"><button class="btn gold" onclick="gecmisBirlestirBaslat()">🔗 ${secili.size} Sevkiyatı Birleştir</button></div>` : ''}`;
+}
+
+function gecmisBirlestirmeModu() {
+  state._birlestirmeModu = !state._birlestirmeModu;
+  state._birlestirmeSecim = new Set();
+  render();
+}
+
+function gecmisSecimToggle(fsId) {
+  if (!state._birlestirmeSecim) state._birlestirmeSecim = new Set();
+  if (state._birlestirmeSecim.has(fsId)) state._birlestirmeSecim.delete(fsId);
+  else state._birlestirmeSecim.add(fsId);
+  render();
+}
+
+function gecmisBirlestirBaslat() {
+  const ids = [...(state._birlestirmeSecim || [])];
+  const list = ids.map(id => (state.sevkiyatlar||[]).find(s => s.fsId === id)).filter(Boolean);
+  if (list.length < 2) { toast('En az 2 sevkiyat seçin'); return; }
+  const mId = list[0].musteriId;
+  if (!list.every(s => s.musteriId === mId)) { toast('⚠ Sadece AYNI müşterinin sevkiyatları birleştirilebilir', 3000); return; }
+  // Toplam balya sor
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="padding:24px">
+      <div class="modal-handle"></div>
+      <h3 style="text-align:center;margin-bottom:6px">🔗 ${list.length} Sevkiyat Birleşecek</h3>
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px">${escapeHtml(list[0].musteriAd||'')} — tek irsaliyede toplanacak.<br>Toplam kaç balya?</div>
+      <input class="input mono" id="birlesik-balya" type="number" min="0" placeholder="Örn. 24" style="font-size:22px;text-align:center;font-weight:800">
+      <div class="flex gap-2 mt-3">
+        <button class="btn secondary" style="flex:1" onclick="document.querySelector('.modal-bg').remove()">İptal</button>
+        <button class="btn gold" style="flex:2" onclick="const b=parseInt(document.getElementById('birlesik-balya').value)||null;document.querySelector('.modal-bg').remove();gecmisBirlestirUygula(${JSON.stringify(ids)}, b)">✓ Birleştir</button>
+      </div>
     </div>`;
+  document.body.appendChild(mbg);
+  setTimeout(() => document.getElementById('birlesik-balya')?.focus(), 100);
+}
+
+async function gecmisBirlestirUygula(ids, balya) {
+  const list = ids.map(id => (state.sevkiyatlar||[]).find(s => s.fsId === id)).filter(Boolean);
+  if (list.length < 2) { toast('Sevkiyatlar bulunamadı'); return; }
+  list.sort((a,b) => a.tarih - b.tarih);       // en eski hayatta kalır (numara/tarih korunur)
+  const survivor = list[0], others = list.slice(1);
+  toast('⏳ Birleştiriliyor...', 4000);
+  let deriler = (survivor.deriler || []).slice();
+  let fotoIdx = (survivor.fotoIndeksleri || []).slice();
+  let fotoSira = fotoIdx.length;
+  const kopyaFotolar = [];
+  for (const o of others) {
+    const offset = deriler.length;
+    deriler = deriler.concat(o.deriler || []);
+    (o.fotoIndeksleri || []).forEach(fi => fotoIdx.push(fi + offset));
+    try {
+      const fotolar = await sevkiyatFotograflariGetir(o.fsId);
+      fotolar.forEach(f => kopyaFotolar.push({ sira: fotoSira++, deriIndex: (f.deriIndex ?? 0) + offset, foto: f.foto }));
+    } catch(e) {}
+  }
+  const tmp = { deriler }; sevkiyatTotalleriYenile(tmp);
+  const notlar = list.map(s => s.not).filter(Boolean).join(' | ');
+  const guncel = {
+    deriler, fotoIndeksleri: fotoIdx, fotoSayisi: fotoIdx.length,
+    toplamAdet: tmp.toplamAdet, toplamYuzeyDm2: tmp.toplamYuzeyDm2,
+    toplamYuzeyFt2: tmp.toplamYuzeyFt2, toplamYuzey: tmp.toplamYuzey,
+    balya: balya || null, birlesmis: true, not: notlar
+  };
+  try {
+    await db.collection('sevkiyatlar').doc(survivor.fsId).update(guncel);
+    for (const f of kopyaFotolar) {
+      await db.collection('sevkiyatlar').doc(survivor.fsId)
+        .collection('fotograflar').doc(String(f.sira))
+        .set({ foto: f.foto, tarih: Date.now(), sira: f.sira, deriIndex: f.deriIndex });
+    }
+    for (const o of others) { await db.collection('sevkiyatlar').doc(o.fsId).delete(); }
+    // Yerel state
+    Object.assign(survivor, guncel);
+    const silSet = new Set(others.map(o => o.fsId));
+    state.sevkiyatlar = (state.sevkiyatlar||[]).filter(s => !silSet.has(s.fsId));
+    if (state.yoneticiSevkiyatlar) state.yoneticiSevkiyatlar = state.yoneticiSevkiyatlar.filter(s => !silSet.has(s.fsId));
+    state._birlestirmeModu = false; state._birlestirmeSecim = new Set();
+    toast(`✓ ${ids.length} sevkiyat birleştirildi → ${survivor.sevkiyatNo}`, 3000);
+    render();
+  } catch(e) {
+    toast('❌ Birleştirilemedi: ' + e.message, 3500);
+  }
 }
 
 function sevkiyatDetayAc(fsId) {
