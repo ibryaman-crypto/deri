@@ -12,7 +12,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root {
@@ -551,7 +550,7 @@ function claudeJsonToInternal(json) {
     ham: '', duzeltildi: false
   });
 
-  return {
+  const veri = {
     cins: alan(json.cins),
     renk: alan(json.renk),
     kod: alan(kodNormalize(json.kod)),
@@ -572,6 +571,53 @@ function claudeJsonToInternal(json) {
     dogrulamaUyarilari: [],
     genelGuven: 0.95
   };
+  // Gerçek güven = zorunlu alanların doluluk oranı (Haiku→Sonnet yükseltme kararı buna dayanır)
+  veri.genelGuven = veriGuveniHesapla(veri);
+  return veri;
+}
+
+// Zorunlu alanların (cins, renk, kod, kalite, toplam yüzey) doluluk oranı → 0..1
+function veriGuveniHesapla(veri) {
+  if (!veri) return 0;
+  let dolu = 0;
+  if (veri.cins?.deger) dolu++;
+  if (veri.renk?.deger) dolu++;
+  if (veri.kod?.deger) dolu++;
+  if (veri.kalite?.deger) dolu++;
+  if ((veri.toplamYuzeyDm2?.deger || 0) > 0 || (veri.toplamYuzeyFt2?.deger || 0) > 0) dolu++;
+  return dolu / 5;
+}
+
+// Ortalama alan ayarları (Storage'dan cache'lenir)
+let OCR_AYAR = { minOrt: 0, sapma: 5 };
+async function ocrAyarYukle() {
+  try {
+    OCR_AYAR.minOrt = parseFloat(await Storage.get('app:minOrtalamaAlan')) || 0;
+    const s = parseFloat(await Storage.get('app:ortSapma'));
+    OCR_AYAR.sapma = isNaN(s) ? 5 : s;
+  } catch(e) {}
+}
+
+// Fiş için engellemeyen "kontrol" uyarıları (ortalama alan) — kayıt engellenmez
+function fisUyarilari(f) {
+  const v = f?.veri; if (!v) return [];
+  const uyarilar = [];
+  const adet = v.deriAdedi?.deger || 0;
+  const dm2 = v.toplamYuzeyDm2?.deger || 0;
+  if (adet > 0 && dm2 > 0) {
+    const hesapOrt = dm2 / adet;
+    if (OCR_AYAR.minOrt > 0 && hesapOrt < OCR_AYAR.minOrt) {
+      uyarilar.push(`Deri başı ortalama alan düşük: ${hesapOrt.toFixed(1)} dm² (min ${OCR_AYAR.minOrt})`);
+    }
+    const ocrOrt = v.ortalamaAlanDm2?.deger || 0;
+    if (ocrOrt > 0) {
+      const fark = Math.abs(ocrOrt - hesapOrt);
+      if (fark > (OCR_AYAR.sapma || 5)) {
+        uyarilar.push(`Ortalama alan tutmuyor: OCR ${ocrOrt.toFixed(1)} ≠ hesap ${hesapOrt.toFixed(1)} (fark ${fark.toFixed(1)})`);
+      }
+    }
+  }
+  return uyarilar;
 }
 
 function dogrula(veri) {
@@ -586,83 +632,6 @@ function dogrula(veri) {
   return veri;
 }
 
-// ====== GÖRSEL ÖN İŞLEME (Tesseract yedek için) ======
-async function gorseliIsle(imageDataUrl) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const minBoyut = 1800;
-      const olcek = img.width < minBoyut ? minBoyut / img.width : 1;
-      canvas.width = Math.round(img.width * olcek);
-      canvas.height = Math.round(img.height * olcek);
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      const w = canvas.width, h = canvas.height;
-
-      // Gri tonlama
-      for (let i = 0; i < data.length; i += 4) {
-        const gray = Math.round(0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2]);
-        data[i] = data[i+1] = data[i+2] = gray;
-      }
-
-      // Integral image
-      const integral = new Float64Array(w * h);
-      for (let y = 0; y < h; y++) {
-        let satir = 0;
-        for (let x = 0; x < w; x++) {
-          const idx = y * w + x;
-          satir += data[idx * 4];
-          integral[idx] = (y > 0 ? integral[idx - w] : 0) + satir;
-        }
-      }
-
-      // Bradley adaptive threshold
-      const pencere = Math.max(10, Math.floor(Math.min(w, h) / 80));
-      const t = 0.15;
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const idx = y * w + x;
-          const x1 = Math.max(0, x - pencere);
-          const x2 = Math.min(w - 1, x + pencere);
-          const y1 = Math.max(0, y - pencere);
-          const y2 = Math.min(h - 1, y + pencere);
-          const sayi = (x2 - x1 + 1) * (y2 - y1 + 1);
-          let toplam = integral[y2 * w + x2];
-          if (y1 > 0) toplam -= integral[(y1 - 1) * w + x2];
-          if (x1 > 0) toplam -= integral[y2 * w + (x1 - 1)];
-          if (y1 > 0 && x1 > 0) toplam += integral[(y1 - 1) * w + (x1 - 1)];
-          const piksel = data[idx * 4];
-          const yeniDeger = (piksel * sayi < toplam * (1 - t)) ? 0 : 255;
-          data[idx * 4] = data[idx * 4 + 1] = data[idx * 4 + 2] = yeniDeger;
-        }
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    img.src = imageDataUrl;
-  });
-}
-
-// ====== TESSERACT YEDEK OCR ======
-async function tesseractOcr(imageData) {
-  if (!state.tesseractWorker) {
-    state.tesseractWorker = await Tesseract.createWorker('tur', 1);
-    await state.tesseractWorker.setParameters({
-      tessedit_pageseg_mode: '6',
-      preserve_interword_spaces: '1',
-    });
-  }
-  const islenmis = await gorseliIsle(imageData);
-  const { data: { text } } = await state.tesseractWorker.recognize(islenmis);
-  return { text, islenmisGorsel: islenmis };
-}
 
 // ====== FİŞ PARSER — Google Vision çıktısına göre optimize edilmiş ======
 // Google Vision özellikleri:
@@ -1064,18 +1033,18 @@ async function ocrYap(imageData, onProgress) {
   let gorsel = imageData;
   try { gorsel = await gorseliKucult(imageData, cozPx, 0.8); } catch(e) {}
 
-  // ADIM 1: Claude Vision — önce ucuz Haiku dene, sadece güven ÇOK düşükse Sonnet'e yükselt
+  // ADIM 1: Claude Vision — önce ucuz Haiku, zorunlu alan eksikse Sonnet'e yükselt
   try {
     onProgress?.('Claude Vision (Haiku) okuyor...', 0.4);
     const json = await claudeOcr(gorsel, 'claude-haiku-4-5-20251001');
     const veri = dogrula(claudeJsonToInternal(json));
-    // Sadece güven çok düşükse Sonnet ile yeniden dene (maliyeti düşük tutmak için)
-    if ((veri.genelGuven || 0) < 0.5) {
+    // Haiku bir veya daha fazla zorunlu alanı okuyamadıysa (genelGuven < 1) Sonnet ile tekrar dene
+    if ((veri.genelGuven || 0) < 1) {
       try {
         onProgress?.('Zor okuma — Sonnet ile yeniden...', 0.6);
         const json2 = await claudeOcr(gorsel, 'claude-sonnet-4-6');
         const veri2 = dogrula(claudeJsonToInternal(json2));
-        // Sonnet daha iyiyse onu kullan
+        // Sonnet en az Haiku kadar tam okuduysa onu kullan
         if ((veri2.genelGuven || 0) >= (veri.genelGuven || 0)) {
           return { veri: veri2, kaynak: 'claude-sonnet', hamMetin: JSON.stringify(json2, null, 2) };
         }
@@ -1092,17 +1061,16 @@ async function ocrYap(imageData, onProgress) {
       return { veri, kaynak: 'claude-sonnet', hamMetin: JSON.stringify(json, null, 2) };
     } catch (e3) {
       console.warn('Claude Vision (Sonnet):', e3.message);
-      toast('⚠ Claude: ' + e3.message.substring(0, 60), 3000);
     }
   }
 
-  // ADIM 2: Google Vision (isteğe bağlı, key varsa)
+  // ADIM 2: Google Vision (yalnızca API anahtarı varsa — yedek)
   const googleKey = await Storage.get('app:googleApiKey');
   if (googleKey) {
     try {
-      onProgress?.('Google Vision...', 0.3);
+      onProgress?.('Google Vision (yedek)...', 0.3);
       const ocrText = await googleVisionOcr(imageData);
-      // Google text → Claude text yorumlama
+      // Google ham metin → Claude ile alanlara yorumla
       const claudeKey2 = await Storage.get('app:claudeApiKey');
       if (claudeKey2) {
         try {
@@ -1112,7 +1080,7 @@ async function ocrYap(imageData, onProgress) {
           return { veri, kaynak: 'google', hamMetin: ocrText };
         } catch(e2) {}
       }
-      // Sadece parser ile dene
+      // Claude olmazsa yerel parser ile dene
       const veri = dogrula(FisParser.ayrist(ocrText));
       veri.dogrulamaUyarilari.unshift('ℹ Claude yorumlama atlandı — parser sonucu');
       return { veri, kaynak: 'google', hamMetin: ocrText };
@@ -1121,12 +1089,8 @@ async function ocrYap(imageData, onProgress) {
     }
   }
 
-  // ADIM 3: Tesseract son çare
-  onProgress?.('Tesseract OCR...', 0.2);
-  const { text } = await tesseractOcr(imageData);
-  const veri = dogrula(FisParser.ayrist(text));
-  veri.dogrulamaUyarilari.unshift('⚠ Bulut OCR başarısız — Tesseract kullanıldı');
-  return { veri, kaynak: 'tesseract', hamMetin: text };
+  // Hiçbiri okuyamadı → hata (kullanıcı fotoğrafla elle düzeltir / Tekrar Oku)
+  throw new Error('OCR başarısız — fişi elle düzenleyin veya tekrar okutun');
 }
 
 // ====== YARDIMCILAR ======
@@ -1330,6 +1294,9 @@ async function ayarlarDialog() {
   const claudeKey = await Storage.get('app:claudeApiKey') || '';
   const pdfBoyut  = await Storage.get('app:pdfBoyut') || 'A4';
   const ocrCoz    = await Storage.get('app:ocrCozunurluk') || 'orta';
+  const minOrt    = await Storage.get('app:minOrtalamaAlan') || '';
+  const ortSapmaV = await Storage.get('app:ortSapma');
+  const ortSapma  = (ortSapmaV === null || ortSapmaV === undefined || ortSapmaV === '') ? 5 : ortSapmaV;
   const fsPlan    = await Storage.get('app:firestorePlan') || 'spark';
   const limitMB   = fsPlan === 'blaze' ? 4096 : 1000;
   // Depolama tahmini: sevkiyat sayısı × ortalama belge boyutu
@@ -1403,6 +1370,24 @@ async function ayarlarDialog() {
             <span style="font-size:10px;color:var(--ink-faint)">${aciklama}</span>
           </label>`).join('')}
         </div>
+      </div>
+
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">📐 Ortalama Alan Kontrolü</div>
+        <div style="font-size:11px;color:var(--ink-faint);margin-bottom:8px">Uyarı verir ama kaydı engellemez.</div>
+        <div class="flex gap-2">
+          <div class="input-group grow" style="margin:0">
+            <label class="input-label">Min. ortalama alan (dm²/deri)</label>
+            <input class="input mono" type="number" step="0.1" id="set-min-ort" value="${minOrt}" placeholder="örn. 90"
+              onchange="Storage.set('app:minOrtalamaAlan', this.value.trim());ocrAyarYukle()">
+          </div>
+          <div class="input-group grow" style="margin:0">
+            <label class="input-label">Sapma toleransı (dm²)</label>
+            <input class="input mono" type="number" step="0.1" id="set-ort-sapma" value="${ortSapma}" placeholder="5"
+              onchange="Storage.set('app:ortSapma', this.value.trim());ocrAyarYukle()">
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--ink-faint);margin-top:6px">Min: her pakette deri başı ortalama alan bundan küçükse uyarır. Sapma: OCR'ın okuduğu ortalama alan ile (toplam ÷ adet) farkı bundan büyükse uyarır (küçük küsürat önemsenmez).</div>
       </div>
 
       <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
@@ -1713,7 +1698,80 @@ async function musteriSec(id) {
   state.aktifFisler = [];
   // Sevkiyat numarası kayıt anında üretilir — boş/atlanan numara oluşmasın
   state.oturumNo = null;
+  state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = '';
+  urunKoduDialog();
+}
+
+// ====== ÜRÜN KODU SORMA (sevkiyat girişi) ======
+async function urunKoduDialog(baslik) {
+  state._kodHarita = await Storage.get('app:kod_bilgisi') || {};
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-handle"></div>
+      <h2 style="margin-bottom:6px">${baslik || 'Ürün Kodu'}</h2>
+      <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px">Bu partinin ürün kodunu girin — okunan tüm fişler bu kod, cins ve renk ile yazılır.</div>
+      <div class="input-group"><label class="input-label">Ürün Kodu</label>
+        <input class="input mono" id="uk-kod" placeholder="Örn. 4160 200" oninput="urunKoduBilgiGoster()" autocomplete="off"></div>
+      <div id="uk-onizle" style="font-size:13px;margin:-4px 0 10px;min-height:18px;color:var(--ink-faint)"></div>
+      <div class="flex gap-2">
+        <div class="input-group grow"><label class="input-label">Cins</label><input class="input" id="uk-cins" placeholder="DLP RUGAN"></div>
+        <div class="input-group grow"><label class="input-label">Renk</label><input class="input" id="uk-renk" placeholder="SIYAH"></div>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button class="btn secondary" onclick="urunKoduDevam(true)">Kodsuz Devam</button>
+        <button class="btn gold" style="flex:2" onclick="urunKoduDevam(false)">✓ Devam</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mbg);
+  setTimeout(() => document.getElementById('uk-kod')?.focus(), 100);
+}
+
+function urunKoduBilgiGoster() {
+  const kod = kodNormalize(document.getElementById('uk-kod').value);
+  const prev = document.getElementById('uk-onizle');
+  const bilgi = state._kodHarita?.[kod];
+  if (kod && bilgi && (bilgi.cins || bilgi.renk)) {
+    prev.innerHTML = `<span style="color:var(--green);font-weight:700">✓ Bilinen kod:</span> ${escapeHtml(bilgi.cins||'')} · ${escapeHtml(bilgi.renk||'')}`;
+    const ci = document.getElementById('uk-cins'), ri = document.getElementById('uk-renk');
+    if (ci && !ci.value) ci.value = bilgi.cins || '';
+    if (ri && !ri.value) ri.value = bilgi.renk || '';
+  } else if (kod) {
+    prev.innerHTML = `<span style="color:var(--amber)">Yeni kod</span> — cins/renk girerseniz öğrenilir`;
+  } else {
+    prev.textContent = '';
+  }
+}
+
+async function urunKoduDevam(kodsuz) {
+  const kod = kodsuz ? '' : kodNormalize(document.getElementById('uk-kod').value);
+  const cins = document.getElementById('uk-cins')?.value.trim().toUpperCase() || '';
+  const renk = document.getElementById('uk-renk')?.value.trim().toUpperCase() || '';
+  state.aktifKod = kod || null;
+  state.aktifKodCins = cins || (state._kodHarita?.[kod]?.cins) || '';
+  state.aktifKodRenk = renk || (state._kodHarita?.[kod]?.renk) || '';
+  if (kod && (cins || renk)) { try { await ogrenilenleriKaydet(state.aktifKodCins, kod, state.aktifKodRenk); } catch(e){} }
+  document.querySelector('.modal-bg')?.remove();
   ekranGit('toplu-cekim');
+}
+
+// Devam ederken: aynı kod mu, yeni kod mu?
+function devamKodDialog() {
+  if (!state.aktifKod) { ekranGit('toplu-cekim'); return; }
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="padding:24px">
+      <div class="modal-handle"></div>
+      <h3 style="text-align:center;margin-bottom:6px">Devam</h3>
+      <div style="text-align:center;font-size:14px;color:var(--ink-soft);margin-bottom:16px">Aynı koddan mı devam ediyorsunuz?<br><b class="mono">${escapeHtml(state.aktifKod)}</b> · ${escapeHtml(state.aktifKodCins||'')} ${escapeHtml(state.aktifKodRenk||'')}</div>
+      <div class="flex gap-2">
+        <button class="btn secondary" style="flex:1" onclick="document.querySelector('.modal-bg').remove();urunKoduDialog('Yeni Ürün Kodu')">Yeni Kod</button>
+        <button class="btn gold" style="flex:2" onclick="document.querySelector('.modal-bg').remove();ekranGit('toplu-cekim')">✓ Aynı Kod (${escapeHtml(state.aktifKod)})</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mbg);
 }
 
 // ====== EKRAN: TOPLU ÇEKİM ======
@@ -1772,7 +1830,7 @@ function ekranTopluCekim() {
     </div>
     <div class="customer-bar">
       <div><div class="label">Müşteri</div><div class="name">${m.ad}</div></div>
-      <div class="lock">🔒 Kilitli</div>
+      ${state.aktifKod ? `<div style="text-align:right"><div class="label">Ürün Kodu</div><div class="name mono" style="font-size:14px">${escapeHtml(state.aktifKod)}</div></div>` : '<div class="lock">🔒 Kilitli</div>'}
     </div>
     <div class="stats-strip">
       <div class="stat"><div class="value">${ist.toplam}</div><div class="label">Toplam</div></div>
@@ -1782,10 +1840,6 @@ function ekranTopluCekim() {
     </div>
     <div class="content">
       ${fisler.length === 0 ? `
-        <div class="info-box" style="background:var(--ai-soft);border-color:var(--ai)">
-          <div class="title" style="color:var(--ai)">🤖 Claude Vision AI Aktif</div>
-          <div>Fiş çekince Claude görseli direkt okuyup yorumluyor — kıvrım, gölge, perspektif sorun değil.</div>
-        </div>
         <div class="empty">
           <div class="icon">⎙</div>
           <div style="font-family:'Fraunces';font-size:18px;margin-bottom:8px">Fiş çekmeye başlayın</div>
@@ -2208,6 +2262,13 @@ async function islemKuyruguIsle() {
     const sonuc = await ocrYap(bekleyen.foto);
     // Öğrenilmiş bilgilerle iyileştir
     sonuc.veri = await ogrenilmistenIyilestir(sonuc.veri);
+    // Oturum ürün kodu ayarlıysa fişe uygula (kod, cins, renk)
+    if (state.aktifKod) {
+      sonuc.veri.kod.deger = state.aktifKod; sonuc.veri.kod.guven = 0.99;
+      if (state.aktifKodCins) { sonuc.veri.cins.deger = state.aktifKodCins; sonuc.veri.cins.guven = 0.99; }
+      if (state.aktifKodRenk) { sonuc.veri.renk.deger = state.aktifKodRenk; sonuc.veri.renk.guven = 0.99; }
+      sonuc.veri.genelGuven = veriGuveniHesapla(sonuc.veri);
+    }
     bekleyen.veri = sonuc.veri;
     bekleyen.hamMetin = sonuc.hamMetin;
     bekleyen.kaynak = sonuc.kaynak;
@@ -2276,9 +2337,12 @@ function fisDuzeltModal(fis) {
   const anaBirim = (fis.musteriiBirim || state.aktifMusteri?.tercihBirim || 'dm2');
   const beklenen = anaBirim === 'dm2' ? beklenenToplamDm2 : beklenenToplamFt2;
 
-  const uyarilar = v.dogrulamaUyarilari.length > 0 ? `
-    <div class="warning"><div class="title">⚠ Uyarılar</div>
-      ${v.dogrulamaUyarilari.map(u => `<div>• ${u}</div>`).join('')}</div>` : '';
+  const ortUyarilari = fisUyarilari(fis);
+  const tumUyarilar = [...v.dogrulamaUyarilari, ...ortUyarilari];
+  const uyarilar = tumUyarilar.length > 0 ? `
+    <div class="warning" style="background:rgba(224,169,79,0.12);border-left:3px solid var(--amber);border-radius:8px;padding:10px 12px;margin-bottom:10px"><div class="title" style="font-weight:700;color:var(--leather-dark)">⚠ Kontrol Önerisi</div>
+      ${tumUyarilar.map(u => `<div style="font-size:12px;margin-top:2px">• ${escapeHtml(u)}</div>`).join('')}
+      <div style="font-size:11px;color:var(--ink-faint);margin-top:6px">Bu uyarılar kaydı engellemez — istersen düzeltmeden kaydedebilirsin.</div></div>` : '';
 
   const kaynakChip = fis.kaynak === 'google' ? '<span class="conf-chip high" style="background:#e8f0fe;color:#4285F4">🔍 Google Vision</span>' :
                      fis.kaynak === 'claude' ? '<span class="conf-chip ai">🤖 Claude AI</span>' :
@@ -2578,8 +2642,11 @@ function ekranInceleme() {
     const idx = state.aktifFisler.indexOf(f);
     const v = f.veri;
     const eksik = fisEksik(f);
-    return `<div onclick="fisDuzelt(${idx})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px${eksik ? ';background:rgba(220,38,38,0.1);border-left:3px solid var(--red)' : ''}">
-      <span style="width:24px;color:${eksik?'var(--red)':'var(--ink-faint)'};font-weight:700">${eksik?'⚠':''}${idx+1}</span>
+    const uyari = !eksik && fisUyarilari(f).length > 0;
+    const stil = eksik ? ';background:rgba(220,38,38,0.1);border-left:3px solid var(--red)'
+                : (uyari ? ';background:rgba(224,169,79,0.12);border-left:3px solid var(--amber)' : '');
+    return `<div onclick="fisDuzelt(${idx})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px${stil}">
+      <span style="width:24px;color:${eksik?'var(--red)':(uyari?'var(--amber)':'var(--ink-faint)')};font-weight:700">${eksik?'⚠':(uyari?'⚠':'')}${idx+1}</span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(v.cins.deger||'?')} · ${escapeHtml(v.kod.deger||'?')} · ${escapeHtml(v.kalite.deger||'?')}</span>
       <span class="mono">${v.deriAdedi.deger}ad</span>
       <span class="mono" style="color:var(--ink-soft)">${(v.toplamYuzeyDm2?.deger||0).toFixed(0)}</span>
@@ -2635,7 +2702,7 @@ function ekranInceleme() {
     <div class="bottom-bar">
       <button class="btn secondary" onclick="ekranGit('toplu-cekim');">Daha Çek</button>
       <button class="btn secondary" onclick="notEkleDialog()" style="padding:14px 12px">📝 Not</button>
-      <button class="btn gold" onclick="sevkiyatKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi} eksik fiş` : 'Sevkiyatı Kaydet'}</button>
+      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi} eksik fiş` : 'Sevkiyatı Kaydet'}</button>
     </div>`;
 }
 
@@ -2655,6 +2722,27 @@ function notEkleDialog() {
     </div>`;
   mbg.onclick = () => mbg.remove();
   document.body.appendChild(mbg);
+}
+
+function balyaSorVeKaydet() {
+  const onayli = state.aktifFisler.filter(f => f.durum === 'hazir' || f.durum === 'onaylandi');
+  if (onayli.length === 0) { toast('Kayıt edilecek onaylı fiş yok', 2000); return; }
+  if (onayli.filter(fisEksik).length > 0) { toast('⚠ Eksik fiş var — önce düzeltin', 3000); return; }
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="padding:24px">
+      <div class="modal-handle"></div>
+      <h3 style="text-align:center;margin-bottom:6px">📦 Balya Sayısı</h3>
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px">Bu sevkiyat kaç balya? (boş bırakabilirsiniz)</div>
+      <input class="input mono" id="balya-sayi" type="number" min="0" placeholder="Örn. 12" style="font-size:22px;text-align:center;font-weight:800" value="${state._balya || ''}">
+      <div class="flex gap-2 mt-3">
+        <button class="btn secondary" style="flex:1" onclick="state._balya=null;document.querySelector('.modal-bg').remove();sevkiyatKaydet()">Boş Geç</button>
+        <button class="btn gold" style="flex:2" onclick="state._balya=parseInt(document.getElementById('balya-sayi').value)||null;document.querySelector('.modal-bg').remove();sevkiyatKaydet()">✓ Kaydet</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mbg);
+  setTimeout(() => document.getElementById('balya-sayi')?.focus(), 100);
 }
 
 async function sevkiyatKaydet() {
@@ -2714,6 +2802,8 @@ async function sevkiyatKaydet() {
       personelAd: state.profil?.ad || state.kullanici?.email || 'Bilinmiyor',
       kontrolDurumu: 'beklemede',
       not: state._sevkiyatNot || '',
+      balya: state._balya || null,
+      urunKodu: state.aktifKod || null,
       deriler
     };
 
@@ -2739,6 +2829,7 @@ async function sevkiyatKaydet() {
     state.sevkiyatlar.unshift(sevkiyat);
     state.aktifFisler = [];
     state._sevkiyatNot = '';
+    state._balya = null;
     state._sonBirlestirmeFis = null;
     titret(80);
     basariDialog(sevkiyat);
@@ -2788,12 +2879,15 @@ async function devamEt() {
   document.querySelector('.modal-bg')?.remove();
   state.aktifFisler = [];
   state.oturumNo = null;
-  ekranGit('toplu-cekim');
+  state._balya = null;
+  // Aynı koddan mı yeni koddan mı devam?
+  devamKodDialog();
 }
 
 function anaEkranaDon() {
   document.querySelector('.modal-bg')?.remove();
   state.aktifMusteri = null; state.aktifFisler = []; state.oturumNo = null;
+  state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = ''; state._balya = null;
   state.ekranGecmisi = []; ekranGit('musteri-listesi');
 }
 
@@ -2833,6 +2927,14 @@ function pdfIcerikDoldur(pdf, s, boyut) {
 
   function yeniSayfa() { pdf.addPage(); y = margin; }
   function yerAyir(h) { if (y + h > altSinir) yeniSayfa(); }
+
+  // ---- Balya (varsa) üstte büyük punto ----
+  if (s.balya) {
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(boyut === 'A4' ? 26 : 20);
+    pdf.text(`${s.balya} BALYA`, W/2, y + 4, { align: 'center' });
+    y += 11;
+  }
 
   // ---- Başlık ----
   pdf.setFont('helvetica', 'bold');
@@ -3082,8 +3184,8 @@ function ekranSevkiyatDetay() {
         <button class="btn gold btn-small" onclick="pdfUret('${s.fsId||s.id}', 'A4')">A4 PDF</button>
         <button class="btn secondary btn-small" onclick="pdfUret('${s.fsId||s.id}', 'A5')">A5 PDF</button>
         <button class="btn secondary btn-small" onclick="paylas(state.aktifSevkiyatDetay)">↗ Paylaş</button>
-        ${state.profil?.rol === 'YONETICI' ? `<button class="btn secondary btn-small" onclick="sevkiyatKodBirlestirDialog('${s.fsId}')">🔗 Birleştir</button>` : ''}
-        ${state.profil?.rol === 'YONETICI' && state._sonBirlestirmeSevk?.fsId === s.fsId ? `<button class="btn secondary btn-small" style="border-color:var(--amber);color:var(--leather-dark)" onclick="birlestirGeriAlSevk()">↩ Geri Al</button>` : ''}
+        <button class="btn secondary btn-small" onclick="sevkiyatKodBirlestirDialog('${s.fsId}')">🔗 Birleştir</button>
+        ${state._sonBirlestirmeSevk?.fsId === s.fsId ? `<button class="btn secondary btn-small" style="border-color:var(--amber);color:var(--leather-dark)" onclick="birlestirGeriAlSevk()">↩ Geri Al</button>` : ''}
         ${state.profil?.rol === 'YONETICI' ? `<button class="btn danger btn-small" onclick="sevkiyatSil('${s.fsId}')">🗑 Sil</button>` : ''}
       </div>
 
@@ -3961,6 +4063,7 @@ async function basla() {
       state.ekran = 'giris'; render(); return;
     }
     state.kullanici = user;
+    ocrAyarYukle();
 
     // Kullanıcı profilini Firestore'dan al
     let profil = null;
