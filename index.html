@@ -483,13 +483,25 @@ async function claudeOcr(imageDataUrl, model = 'claude-haiku-4-5-20251001') {
 
 ETİKET DÜZENİ (bu alanlara odaklan):
 - ÜST BÖLÜM: "Cins: ...", "Renk: ...", "Kod: ...", "Kalite: ..." — her biri iki nokta üst üste (:) işaretinden SONRA gelen değerdir.
-- ALT BÖLÜM: "Deri Adedi: ...", "Toplam Yüzey: ..." — sayısal değerler.
+- ORTA BÖLÜM: "T1 N. ..." seri no ve "G.N. / Yuzey" tablosu (tek tek ölçümler — BUNLARI OKUMA/TOPLAMA).
+- ALT BÖLÜM (en önemli 3 satır):
+  * "Deri Adedi : <sayı>"      → deriAdedi (örn. 7)
+  * "Toplam Yuzey : <A> dm2  <B> ft2"  → toplamYuzeyDm2 = A (BÜYÜK sayı, örn. 1071), toplamYuzeyFt2 = B (örn. 115.25)
+  * "Ortalama Alan : <C> dm2"  → ortalamaAlanDm2 = C (KÜÇÜK sayı, örn. 153)
 
-OKUMA KURALLARI (çok önemli):
-1. ":" işareti sadece bir ayraçtır — onu bir rakam, harf veya şekil olarak OKUMA. Değer ":" işaretinden sonra başlar.
-2. Rakamları TEK TEK ve dikkatle oku. 0/O, 1/7, 2/Z, 5/S, 6/8, 8/B, 3/8 karışabilir — bağlama göre en olası olanı seç ama UYDURMA.
-3. Kod genelde "4160 200" gibi rakam gruplarıdır. Her haneyi ayrı ayrı doğrula; emin değilsen tahmin etme, olduğu gibi bırak.
-4. Emin olmadığın haneyi değiştirme; gördüğünü yaz.
+⚠ EN KRİTİK KURAL — "Toplam Yuzey" ile "Ortalama Alan"ı ASLA KARIŞTIRMA:
+- "Toplam Yuzey" = tüm derilerin TOPLAM alanı → BÜYÜK sayı (örn. 1071 dm2). Bunu toplamYuzeyDm2'ye yaz.
+- "Ortalama Alan" = deri BAŞINA ortalama → KÜÇÜK sayı (örn. 153 dm2). Bunu ortalamaAlanDm2'ye yaz.
+- Mantık kontrolü: Toplam Yuzey ≈ Ortalama Alan × Deri Adedi olmalı (örn. 153 × 7 ≈ 1071). Bu tutmuyorsa iki değeri yer değiştirmişsindir — düzelt.
+- Ortalama Alan değerini SAKIN toplamYuzeyDm2 olarak yazma.
+
+OKUMA KURALLARI:
+1. ":" işareti sadece ayraçtır — rakam/şekil olarak OKUMA. Değer ":" işaretinden sonradır.
+2. Rakamları tek tek dikkatle oku (0/O, 1/7, 2/Z, 5/S, 6/8, 8/B karışabilir). Emin değilsen uydurma.
+3. Kod "4160 200" / "3200" gibi rakam gruplarıdır; her haneyi doğrula.
+
+ÖRNEK (bu etiket düzeni için): Deri Adedi 7, "Toplam Yuzey : 1071 dm2 115.25 ft2", "Ortalama Alan : 153 dm2"
+→ deriAdedi:7, toplamYuzeyDm2:1071, toplamYuzeyFt2:115.25, ortalamaAlanDm2:153
 
 YALNIZCA JSON döndür, başka hiçbir şey yazma:
 
@@ -500,12 +512,12 @@ YALNIZCA JSON döndür, başka hiçbir şey yazma:
   "kalite": "'Kalite:' etiketinden sonraki değer. A, A2, B, C, ECO, ECO2 olabilir. DİKKAT: 'ECO' veya 'ECO2' çoğu zaman ayrı bir damga/kaşe ya da el yazısı olarak da bulunur — etiketin herhangi bir yerinde 'ECO' geçiyorsa kalite ECO'dur, atlama.",
   "seriNo": "T1 N. satırındaki rakamlar, baştaki sıfırlar dahil (örn: 000000001)",
   "barkod": "barkod altındaki rakamlar (10-14 hane)",
-  "deriAdedi": <tam sayı>,
-  "toplamYuzeyFt2": <ondalık veya null>,
-  "toplamYuzeyDm2": <ondalık veya null>,
-  "ortalamaAlanFt2": <ondalık veya null>,
-  "ortalamaAlanDm2": <ondalık veya null>,
-  "birim": "dm2 veya ft2 — tablodaki değerlerin birimi. 50'den büyükse dm2, küçükse ft2",
+  "deriAdedi": <'Deri Adedi:' karşısındaki tam sayı>,
+  "toplamYuzeyDm2": <'Toplam Yuzey:' satırındaki 'dm2' biriminden önceki BÜYÜK sayı (örn. 1071)>,
+  "toplamYuzeyFt2": <'Toplam Yuzey:' satırındaki 'ft2' biriminden önceki sayı (örn. 115.25) veya null>,
+  "ortalamaAlanDm2": <'Ortalama Alan:' satırındaki KÜÇÜK sayı (örn. 153) — deri başına ortalama, TOPLAM DEĞİL>,
+  "ortalamaAlanFt2": <'Ortalama Alan' ft2 değeri varsa, yoksa null>,
+  "birim": "dm2",
   "yuzeyOlcumleri": []
 }
 
@@ -597,6 +609,7 @@ async function ocrAyarYukle() {
     OCR_AYAR.sapma = isNaN(s) ? 5 : s;
   } catch(e) {}
 }
+ocrAyarYukle(); // uygulama açılışında yükle
 
 // Fiş için engellemeyen "kontrol" uyarıları (ortalama alan) — kayıt engellenmez
 function fisUyarilari(f) {
@@ -604,18 +617,25 @@ function fisUyarilari(f) {
   const uyarilar = [];
   const adet = v.deriAdedi?.deger || 0;
   const dm2 = v.toplamYuzeyDm2?.deger || 0;
+  const ocrOrt = v.ortalamaAlanDm2?.deger || 0;
+  const sapma = (OCR_AYAR.sapma > 0) ? OCR_AYAR.sapma : 5;
   if (adet > 0 && dm2 > 0) {
     const hesapOrt = dm2 / adet;
+    // 1) Min ortalama alan kontrolü (ayardan)
     if (OCR_AYAR.minOrt > 0 && hesapOrt < OCR_AYAR.minOrt) {
       uyarilar.push(`Deri başı ortalama alan düşük: ${hesapOrt.toFixed(1)} dm² (min ${OCR_AYAR.minOrt})`);
     }
-    const ocrOrt = v.ortalamaAlanDm2?.deger || 0;
+    // 2) OCR'ın okuduğu Ortalama Alan ile (toplam ÷ adet) karşılaştır
     if (ocrOrt > 0) {
       const fark = Math.abs(ocrOrt - hesapOrt);
-      if (fark > (OCR_AYAR.sapma || 5)) {
-        uyarilar.push(`Ortalama alan tutmuyor: OCR ${ocrOrt.toFixed(1)} ≠ hesap ${hesapOrt.toFixed(1)} (fark ${fark.toFixed(1)})`);
+      if (fark > sapma) {
+        uyarilar.push(`Ortalama alan tutmuyor: etiket ${ocrOrt.toFixed(1)} ≠ hesap ${hesapOrt.toFixed(1)} (fark ${fark.toFixed(1)}) — Toplam/Ortalama karışmış olabilir`);
       }
     }
+  }
+  // 3) Toplam, ortalamadan küçükse kesin karışıklık (adet≥2 iken toplam ≥ ortalama olmalı)
+  if (adet >= 2 && dm2 > 0 && ocrOrt > 0 && dm2 < ocrOrt) {
+    uyarilar.push(`⚠ Toplam Yüzey (${dm2}) ortalamadan (${ocrOrt}) küçük — değerler yer değiştirmiş olabilir, kontrol edin`);
   }
   return uyarilar;
 }
@@ -1707,20 +1727,20 @@ async function urunKoduDialog(baslik) {
   state._kodHarita = await Storage.get('app:kod_bilgisi') || {};
   const mbg = document.createElement('div');
   mbg.className = 'modal-bg';
+  const atts = 'autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-form-type="other" inputmode="text"';
   mbg.innerHTML = `
-    <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal" onclick="event.stopPropagation()" style="padding:16px 18px 22px">
       <div class="modal-handle"></div>
-      <h2 style="margin-bottom:6px">${baslik || 'Ürün Kodu'}</h2>
-      <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px">Bu partinin ürün kodunu girin — okunan tüm fişler bu kod, cins ve renk ile yazılır.</div>
-      <div class="input-group"><label class="input-label">Ürün Kodu</label>
-        <input class="input mono" id="uk-kod" placeholder="Örn. 4160 200" oninput="urunKoduBilgiGoster()" autocomplete="off"></div>
-      <div id="uk-onizle" style="font-size:13px;margin:-4px 0 10px;min-height:18px;color:var(--ink-faint)"></div>
-      <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Cins</label><input class="input" id="uk-cins" placeholder="DLP RUGAN"></div>
-        <div class="input-group grow"><label class="input-label">Renk</label><input class="input" id="uk-renk" placeholder="SIYAH"></div>
+      <div style="font-weight:800;font-size:17px;margin-bottom:8px">${baslik || 'Ürün Kodu'}</div>
+      <input class="input mono" id="uk-kod" placeholder="Ürün Kodu (örn. 4160 200)" oninput="urunKoduBilgiGoster()" ${atts}
+        style="font-size:17px;font-weight:700">
+      <div id="uk-onizle" style="font-size:12px;margin:4px 2px 8px;min-height:16px;color:var(--ink-faint)"></div>
+      <div class="flex gap-2" style="margin-bottom:10px">
+        <input class="input" id="uk-cins" placeholder="Cins" ${atts} style="flex:1">
+        <input class="input" id="uk-renk" placeholder="Renk" ${atts} style="flex:1">
       </div>
-      <div class="flex gap-2 mt-3">
-        <button class="btn secondary" onclick="urunKoduDevam(true)">Kodsuz Devam</button>
+      <div class="flex gap-2">
+        <button class="btn secondary" onclick="urunKoduDevam(true)" style="flex:1">Kodsuz</button>
         <button class="btn gold" style="flex:2" onclick="urunKoduDevam(false)">✓ Devam</button>
       </div>
     </div>`;
@@ -1753,6 +1773,14 @@ async function urunKoduDevam(kodsuz) {
   state.aktifKodRenk = renk || (state._kodHarita?.[kod]?.renk) || '';
   if (kod && (cins || renk)) { try { await ogrenilenleriKaydet(state.aktifKodCins, kod, state.aktifKodRenk); } catch(e){} }
   document.querySelector('.modal-bg')?.remove();
+  ekranGit('toplu-cekim');
+}
+
+// İnceleme ekranında bir gruba tıklayınca o kodun çekimine dön (aynı koda ilave)
+function grubaDevam(kodEnc, cinsEnc, renkEnc) {
+  state.aktifKod = decodeURIComponent(kodEnc) || null;
+  state.aktifKodCins = decodeURIComponent(cinsEnc) || '';
+  state.aktifKodRenk = decodeURIComponent(renkEnc) || '';
   ekranGit('toplu-cekim');
 }
 
@@ -1848,6 +1876,7 @@ function ekranTopluCekim() {
       ` : `<div style="background:var(--bg-card);border:1px solid var(--line);border-radius:12px;overflow:hidden">${fisKartlari}</div>`}
     </div>
     <input type="file" accept="image/*" capture="environment" class="hidden-input" id="kamera-input" onchange="fisCekildi(this.files[0])">
+    <button onclick="urunKoduDialog('Yeni Ürün Kodu')" style="position:fixed;bottom:30px;left:20px;background:var(--leather-dark);color:#fff;border:none;padding:12px 16px;border-radius:999px;font-size:13px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,0.25);z-index:60">🏷️ Yeni Kod</button>
     <button class="manual-fab" onclick="manuelFisEkle()">＋ Manuel Giriş</button>
     <div class="capture-fab" onclick="kameraAc()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -2611,7 +2640,14 @@ function ekranInceleme() {
   const stdDm2 = stdGruplar.reduce((s,g) => s + g.toplamDm2, 0);
   const ecoDm2 = ecoGruplar.reduce((s,g) => s + g.toplamDm2, 0);
 
-  const grupHtml = gruplar.map(g => grupKartiHtml(g)).join('');
+  // Gruba tıklayınca o kodun çekimine dön (aynı koda ilave)
+  const grupHtml = gruplar.map(g => {
+    const kodEnc = encodeURIComponent(g.kod || '');
+    const cinsEnc = encodeURIComponent(g.cins || '');
+    const renkEnc = encodeURIComponent(g.renk || '');
+    return `<div onclick="grubaDevam('${kodEnc}','${cinsEnc}','${renkEnc}')" style="cursor:pointer">${grupKartiHtml(g)}
+      <div style="text-align:center;font-size:11px;color:var(--leather);margin:-6px 0 8px">📷 bu koda daha çek</div></div>`;
+  }).join('');
 
   // Aynı cins+renk ama farklı kod → olası yanlış okuma, birleştirme öner
   const crMap = {};
@@ -2700,9 +2736,10 @@ function ekranInceleme() {
       </details>
     </div>
     <div class="bottom-bar">
-      <button class="btn secondary" onclick="ekranGit('toplu-cekim');">Daha Çek</button>
-      <button class="btn secondary" onclick="notEkleDialog()" style="padding:14px 12px">📝 Not</button>
-      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi} eksik fiş` : 'Sevkiyatı Kaydet'}</button>
+      <button class="btn secondary" onclick="ekranGit('toplu-cekim');" style="padding:14px 10px">Daha Çek</button>
+      <button class="btn secondary" onclick="urunKoduDialog('Yeni Ürün Kodu')" style="padding:14px 10px">🏷️ Yeni Kod</button>
+      <button class="btn secondary" onclick="notEkleDialog()" style="padding:14px 10px">📝 Not</button>
+      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi}` : 'Kaydet'}</button>
     </div>`;
 }
 
@@ -3104,9 +3141,9 @@ function ekranSevkiyatListesi() {
 
   return `
     <div class="topbar">
-      <button onclick="${secModu ? 'gecmisBirlestirmeModu()' : 'geriDon()'};" style="font-size:13px">${secModu ? '✕ Vazgeç' : '‹ Geri'}</button>
+      <button onclick="${secModu ? 'gecmisBirlestirmeModu()' : 'geriDon()'};" style="font-size:13px;color:var(--leather-dark);font-weight:600">${secModu ? '✕ Vazgeç' : '‹ Geri'}</button>
       <div class="brand">${secModu ? 'Birleştir' : 'Geçmiş'}</div>
-      <button onclick="gecmisBirlestirmeModu()" style="font-size:12px;padding:6px 10px;${secModu?'':'background:var(--gold-soft,#fef6e4);border-radius:8px'}">${secModu ? '' : '🔗 Birleştir'}</button>
+      <button onclick="gecmisBirlestirmeModu()" style="font-size:13px;color:var(--leather-dark);font-weight:700;padding:6px 10px">${secModu ? '' : '🔗 Birleştir'}</button>
     </div>
     <div class="content" style="${secModu ? 'padding-bottom:80px' : ''}">
       ${secModu ? '<div style="background:var(--gold-soft,#fef6e4);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">Aynı müşteriye giden 2+ sevkiyat seçin — tek irsaliyede birleşecek.</div>' : araBar}
@@ -3128,9 +3165,14 @@ function gecmisSecimToggle(fsId) {
   render();
 }
 
+function sevkBulHer(fsId) {
+  return (state.sevkiyatlar||[]).find(s => s.fsId === fsId)
+      || (state.yoneticiSevkiyatlar||[]).find(s => s.fsId === fsId);
+}
+
 function gecmisBirlestirBaslat() {
   const ids = [...(state._birlestirmeSecim || [])];
-  const list = ids.map(id => (state.sevkiyatlar||[]).find(s => s.fsId === id)).filter(Boolean);
+  const list = ids.map(id => sevkBulHer(id)).filter(Boolean);
   if (list.length < 2) { toast('En az 2 sevkiyat seçin'); return; }
   const mId = list[0].musteriId;
   if (!list.every(s => s.musteriId === mId)) { toast('⚠ Sadece AYNI müşterinin sevkiyatları birleştirilebilir', 3000); return; }
@@ -3153,7 +3195,7 @@ function gecmisBirlestirBaslat() {
 }
 
 async function gecmisBirlestirUygula(ids, balya) {
-  const list = ids.map(id => (state.sevkiyatlar||[]).find(s => s.fsId === id)).filter(Boolean);
+  const list = ids.map(id => sevkBulHer(id)).filter(Boolean);
   if (list.length < 2) { toast('Sevkiyatlar bulunamadı'); return; }
   list.sort((a,b) => a.tarih - b.tarih);       // en eski hayatta kalır (numara/tarih korunur)
   const survivor = list[0], others = list.slice(1);
@@ -3753,11 +3795,18 @@ function ekranYonetici() {
   const sevk = state.yoneticiSevkiyatlar || [];
 
   if (state.yoneticiSekme === 'onay') {
-    const bekleyenler = sevk.filter(s => s.kontrolDurumu !== 'onaylandi');
+    const bekleyenler = sevk.filter(s => s.kontrolDurumu !== 'onaylandi').slice().sort((a,b)=>b.tarih-a.tarih);
+    const secModu = state._birlestirmeModu;
+    const secili = state._birlestirmeSecim || new Set();
     icerik = `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button onclick="gecmisBirlestirmeModu()" style="font-size:13px;color:var(--leather-dark);font-weight:700;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-card)">${secModu ? '✕ Vazgeç' : '🔗 Birleştir'}</button>
+      </div>
+      ${secModu ? '<div style="background:var(--gold-soft,#fef6e4);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">Aynı müşteriye giden 2+ sevkiyat seçin — tek irsaliyede birleşecek.</div>' : ''}
       ${bekleyenler.length === 0
         ? '<div class="empty"><div class="icon">✅</div><div>Tüm sevkiyatlar onaylandı</div></div>'
-        : bekleyenler.slice().sort((a,b)=>b.tarih-a.tarih).map(s => sevkiyatKartiOnay(s)).join('')}`;
+        : bekleyenler.map(s => secModu ? sevkiyatKartiSecim(s, secili.has(s.fsId)) : sevkiyatKartiOnay(s)).join('')}
+      ${secModu && secili.size >= 2 ? `<div style="position:sticky;bottom:8px;margin-top:10px"><button class="btn gold" style="width:100%" onclick="gecmisBirlestirBaslat()">🔗 ${secili.size} Sevkiyatı Birleştir</button></div>` : ''}`;
 
   } else if (state.yoneticiSekme === 'arama') {
     const aramaVal = state._yoneticiArama || '';
@@ -3893,6 +3942,18 @@ function sevkiyatKarti(s) {
       <span>📐 ${sayiFormatla(s.toplamYuzeyDm2||0)} dm²</span>
     </div>
     ${s.not ? `<div style="margin-top:6px;padding:6px 10px;background:var(--gold-soft,#fef6e4);border-radius:6px;font-size:12px;color:var(--ink-soft)">📝 ${escapeHtml(s.not)}</div>` : ''}
+  </div>`;
+}
+
+function sevkiyatKartiSecim(s, sel) {
+  return `<div class="shipment-item" onclick="gecmisSecimToggle('${s.fsId}')" style="${sel ? 'background:var(--gold-soft,#fef6e4);outline:2px solid var(--gold)' : ''}">
+    <div class="header"><span class="no">${sel ? '☑ ' : '☐ '}${s.sevkiyatNo}</span><span class="date">${tarihFormatla(s.tarih)}</span></div>
+    <div class="customer">${escapeHtml(s.musteriAd||'')}</div>
+    <div class="totals">
+      <span>📦 ${(s.deriler||[]).length} paket</span>
+      <span>🐂 ${s.toplamAdet} deri</span>
+      <span>📐 ${sayiFormatla(s.toplamYuzeyDm2||0)} dm²</span>
+    </div>
   </div>`;
 }
 
