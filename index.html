@@ -1452,12 +1452,58 @@ async function ayarlarDialog() {
     }
     const satirlar = Object.entries(harita)
       .sort((a, b) => b[1].sayim - a[1].sayim)
-      .map(([kod, b]) => `<div style="padding:3px 0;border-bottom:1px solid var(--line)">
-        <b class="mono">${escapeHtml(kod)}</b> — ${escapeHtml(b.cins || '?')} / ${escapeHtml(b.renk || '?')}
-        <span style="color:var(--ink-faint)">(${Number(b.sayim)}x)</span>
+      .map(([kod, b]) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)">
+        <div style="flex:1"><b class="mono">${escapeHtml(kod)}</b> — ${escapeHtml(b.cins || '?')} / ${escapeHtml(b.renk || '?')} <span style="color:var(--ink-faint)">(${Number(b.sayim||0)}x)</span></div>
+        <span onclick="ogrenilenDuzenle('${encodeURIComponent(kod)}')" style="cursor:pointer;font-size:14px">✏️</span>
+        <span onclick="ogrenilenSil('${encodeURIComponent(kod)}')" style="cursor:pointer;font-size:14px">🗑</span>
       </div>`).join('');
     el.innerHTML = satirlar;
   });
+}
+
+async function ogrenilenDuzenle(kodEnc) {
+  const kod = decodeURIComponent(kodEnc);
+  const harita = await Storage.get('app:kod_bilgisi') || {};
+  const b = harita[kod] || { cins:'', renk:'', sayim:0 };
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.style.zIndex = 200;
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="padding:20px">
+      <div class="modal-handle"></div>
+      <h3 style="margin-bottom:12px">Öğrenilen Kod: <span class="mono">${escapeHtml(kod)}</span></h3>
+      <div class="input-group"><label class="input-label">Cins</label><input class="input" id="og-cins" value="${escapeHtml(b.cins||'')}"></div>
+      <div class="input-group"><label class="input-label">Renk</label><input class="input" id="og-renk" value="${escapeHtml(b.renk||'')}"></div>
+      <div class="flex gap-2 mt-3">
+        <button class="btn secondary" style="flex:1" onclick="this.closest('.modal-bg').remove()">İptal</button>
+        <button class="btn green" style="flex:2" onclick="ogrenilenKaydet('${encodeURIComponent(kod)}')">✓ Kaydet</button>
+      </div>
+    </div>`;
+  mbg.onclick = () => mbg.remove();
+  document.body.appendChild(mbg);
+}
+
+async function ogrenilenKaydet(kodEnc) {
+  const kod = decodeURIComponent(kodEnc);
+  const harita = await Storage.get('app:kod_bilgisi') || {};
+  const cins = document.getElementById('og-cins').value.trim().toUpperCase();
+  const renk = document.getElementById('og-renk').value.trim().toUpperCase();
+  harita[kod] = { cins, renk, sayim: (harita[kod]?.sayim || 1) };
+  await Storage.set('app:kod_bilgisi', harita);
+  document.querySelectorAll('.modal-bg').forEach(e => e.remove());
+  toast('✓ Güncellendi');
+  ayarlarDialog();
+}
+
+async function ogrenilenSil(kodEnc) {
+  const kod = decodeURIComponent(kodEnc);
+  if (!confirm(`'${kod}' kodu öğrenilenlerden silinsin mi?`)) return;
+  const harita = await Storage.get('app:kod_bilgisi') || {};
+  delete harita[kod];
+  await Storage.set('app:kod_bilgisi', harita);
+  document.querySelectorAll('.modal-bg').forEach(e => e.remove());
+  toast('Silindi');
+  ayarlarDialog();
 }
 
 async function ogrenilenleriSifirla() {
@@ -1831,14 +1877,18 @@ function ekranTopluCekim() {
 
     const v = f.veri;
     // Zorunlu alanların hepsi dolu mu? (cins, renk, kod, kalite, toplam yüzey)
-    const tamOk = !fisEksik(f);
+    const eksik = fisEksik(f);
+    const kontrol = !eksik && fisKontrolGerekli(f); // ortalama alan vb. uyarısı, henüz kontrol edilmemiş
+    const tamOk = !eksik && !kontrol;
 
-    const satirStil = tamOk
-      ? 'border-bottom:1px solid var(--line)'
-      : 'border-bottom:1px solid var(--line);background:rgba(220,38,38,0.08);border-left:3px solid var(--red)';
-    const durum = tamOk
-      ? '<span style="color:var(--green);font-weight:700;font-size:12px">✓ Tam</span>'
-      : '<span style="color:#fff;font-weight:700;font-size:10px;background:var(--red);padding:2px 6px;border-radius:4px">⚠ Eksik</span>';
+    const satirStil = eksik
+      ? 'border-bottom:1px solid var(--line);background:rgba(220,38,38,0.08);border-left:3px solid var(--red)'
+      : (kontrol ? 'border-bottom:1px solid var(--line);background:rgba(224,169,79,0.12);border-left:3px solid var(--amber)'
+                 : 'border-bottom:1px solid var(--line)');
+    const durum = eksik
+      ? '<span style="color:#fff;font-weight:700;font-size:10px;background:var(--red);padding:2px 6px;border-radius:4px">⚠ Eksik</span>'
+      : (kontrol ? '<span style="color:#fff;font-weight:700;font-size:10px;background:var(--amber);padding:2px 6px;border-radius:4px">⚠ Kontrol</span>'
+                 : '<span style="color:var(--green);font-weight:700;font-size:12px">✓ Tam</span>');
 
     return `<div onclick="fisDuzelt(${idx})" style="display:flex;align-items:center;gap:10px;padding:12px 14px;${satirStil};cursor:pointer">
       <div style="width:28px;text-align:center;font-weight:700;color:var(--ink-faint)">${sira}</div>
@@ -2319,6 +2369,7 @@ async function islemKuyruguIsle() {
 async function oturumIptal() {
   if (state.aktifFisler.length > 0 && !confirm('Bu oturumdaki tüm fişler kaybolacak. Emin misiniz?')) return;
   state.aktifMusteri = null; state.aktifFisler = []; state.oturumNo = null;
+  state._ekleSevkiyatId = null; state.aktifKod = null;
   state.ekranGecmisi = []; ekranGit('musteri-listesi');
 }
 
@@ -2343,8 +2394,19 @@ function fisDuzelt(idx) {
   if (fis.durum === 'hata') {
     if (!fis.veri) { fis.veri = bosVeri(); fis.kaynak = fis.kaynak || 'okunamadi'; }
   }
+  fis._kontrolEdildi = true; // fiş açıldı → kontrol edilmiş sayılır
   state.aktifFisIdx = idx;
   fisDuzeltModal(fis);
+}
+
+// Ortalama-alan gibi uyarısı olan ve henüz açılmamış fişler kontrol gerektirir
+function fisKontrolGerekli(f) {
+  return fisUyarilari(f).length > 0 && !f._kontrolEdildi;
+}
+
+function fisModalKapat() {
+  document.querySelector('.modal-bg')?.remove();
+  render();
 }
 
 function fisTekrarOku(idx) {
@@ -2424,10 +2486,11 @@ function fisDuzeltModal(fis) {
       <div class="flex gap-2 mt-4">
         <button class="btn danger btn-small" onclick="fisSil(state.aktifFisIdx)">Sil</button>
         ${fis.foto && fis.kaynak !== 'manuel' ? `<button class="btn secondary btn-small" onclick="fisTekrarOku(state.aktifFisIdx)">🔄 Tekrar Oku</button>` : ''}
-        <button class="btn green" onclick="fisOnaylaVeDevam(state.aktifFisIdx)" style="flex:2">✓ Onayla → Sonraki</button>
+        <button class="btn secondary btn-small" onclick="fisModalKapat()">Kapat</button>
+        <button class="btn green" onclick="fisOnaylaVeDevam(state.aktifFisIdx)" style="flex:2">✓ Onayla</button>
       </div>
     </div>`;
-  mbg.onclick = () => mbg.remove();
+  mbg.onclick = () => fisModalKapat();
   document.body.appendChild(mbg);
 }
 
@@ -2671,7 +2734,12 @@ function ekranInceleme() {
 
   // Eksik okunan fişler en üste sabitlenir ve kırmızı gösterilir
   const eksikSayisi = onayli.filter(fisEksik).length;
-  const siraliOnayli = onayli.slice().sort((a,b) => (fisEksik(b)?1:0) - (fisEksik(a)?1:0));
+  const kontrolSayisi = onayli.filter(f => !fisEksik(f) && fisKontrolGerekli(f)).length;
+  const siraliOnayli = onayli.slice().sort((a,b) => {
+    const ea = fisEksik(a)?2:(fisKontrolGerekli(a)?1:0);
+    const eb = fisEksik(b)?2:(fisKontrolGerekli(b)?1:0);
+    return eb - ea;
+  });
 
   // Tek tek fişler (düzenleme için tıklanabilir)
   const fisListesi = siraliOnayli.map(f => {
@@ -2727,6 +2795,7 @@ function ekranInceleme() {
       ${grupHtml}
 
       ${eksikSayisi > 0 ? `<div style="background:rgba(220,38,38,0.1);border:1px solid var(--red);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;color:var(--red);font-weight:600">⚠ ${eksikSayisi} fişte eksik bilgi var (cins, renk, kod, kalite veya toplam yüzey). Kaydetmeden önce üstteki kırmızı fişleri düzeltin.</div>` : ''}
+      ${kontrolSayisi > 0 ? `<div style="background:rgba(224,169,79,0.15);border:1px solid var(--amber);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;color:var(--leather-dark);font-weight:600">⚠ Kontrol edilmesi gereken ${kontrolSayisi} fiş var (ortalama alan uyuşmuyor). Sarı fişlere dokunup kontrol edin — düzeltme yapmasanız bile kontrol sonrası kaydedebilirsiniz.</div>` : ''}
 
       <details style="margin-top:12px" ${eksikSayisi>0?'open':''}>
         <summary style="cursor:pointer;font-size:13px;color:var(--ink-soft);padding:8px 0">📋 Tüm Paketler (${onayli.length}) — düzenlemek için tıklayın</summary>
@@ -2739,7 +2808,7 @@ function ekranInceleme() {
       <button class="btn secondary" onclick="ekranGit('toplu-cekim');" style="padding:14px 10px">Daha Çek</button>
       <button class="btn secondary" onclick="urunKoduDialog('Yeni Ürün Kodu')" style="padding:14px 10px">🏷️ Yeni Kod</button>
       <button class="btn secondary" onclick="notEkleDialog()" style="padding:14px 10px">📝 Not</button>
-      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi}` : 'Kaydet'}</button>
+      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi}` : (state._ekleSevkiyatId ? '➕ Ekle' : 'Kaydet')}</button>
     </div>`;
 }
 
@@ -2761,10 +2830,73 @@ function notEkleDialog() {
   document.body.appendChild(mbg);
 }
 
+// Mevcut (onaylanmamış) bir sevkiyata ekleme yapmaya başla
+function sevkiyataEklemeBaslat(fsId) {
+  const s = sevkBulHer(fsId) || state.aktifSevkiyatDetay;
+  if (!s) { toast('Sevkiyat bulunamadı'); return; }
+  if (s.kontrolDurumu === 'onaylandi') { toast('Onaylanmış sevkiyata ekleme yapılamaz'); return; }
+  const m = state.musteriler.find(x => x.id === s.musteriId) || { id: s.musteriId, ad: s.musteriAd, kod: s.musteriKod, tercihBirim: s.musteriiBirim || 'dm2' };
+  state.aktifMusteri = m;
+  state.aktifFisler = [];
+  state.oturumNo = s.sevkiyatNo;      // bilgi amaçlı göster
+  state._ekleSevkiyatId = fsId;
+  state.aktifKod = s.urunKodu || null; state.aktifKodCins = ''; state.aktifKodRenk = '';
+  toast(`➕ ${s.sevkiyatNo} sevkiyatına ekleme — fiş çekin`, 2500);
+  ekranGit('toplu-cekim');
+}
+
+async function sevkiyataEkleUygula(yeniDerilerFotolu) {
+  const fsId = state._ekleSevkiyatId;
+  const s = sevkBulHer(fsId);
+  if (!s) { toast('Hedef sevkiyat bulunamadı', 3000); return; }
+  const offset = (s.deriler || []).length;
+  // Fotoğrafları ayır
+  const fotoKayitlari = [];
+  const yeniDeriler = yeniDerilerFotolu.map((d, i) => {
+    const { foto, ...rest } = d;
+    if (foto) fotoKayitlari.push({ deriIndex: offset + i, foto });
+    return rest;
+  });
+  const birlesikDeriler = (s.deriler || []).concat(yeniDeriler);
+  const mevcutFotoSayisi = (s.fotoIndeksleri || []).length;
+  const yeniFotoIdx = (s.fotoIndeksleri || []).concat(fotoKayitlari.map(f => f.deriIndex));
+  const tmp = { deriler: birlesikDeriler }; sevkiyatTotalleriYenile(tmp);
+  const guncel = {
+    deriler: birlesikDeriler, fotoIndeksleri: yeniFotoIdx, fotoSayisi: yeniFotoIdx.length,
+    toplamAdet: tmp.toplamAdet, toplamYuzeyDm2: tmp.toplamYuzeyDm2,
+    toplamYuzeyFt2: tmp.toplamYuzeyFt2, toplamYuzey: tmp.toplamYuzey
+  };
+  await db.collection('sevkiyatlar').doc(fsId).update(guncel);
+  for (let i = 0; i < fotoKayitlari.length; i++) {
+    const sira = mevcutFotoSayisi + i;
+    await db.collection('sevkiyatlar').doc(fsId).collection('fotograflar').doc(String(sira))
+      .set({ foto: fotoKayitlari[i].foto, tarih: Date.now(), sira, deriIndex: fotoKayitlari[i].deriIndex });
+  }
+  // Yerel state
+  [s, state.aktifSevkiyatDetay].forEach(o => { if (o && o.fsId === fsId) Object.assign(o, guncel); });
+  state.aktifFisler = [];
+  state._ekleSevkiyatId = null; state.aktifKod = null;
+  titret(80);
+  toast(`✓ ${yeniDeriler.length} paket sevkiyata eklendi`, 2500);
+  state.aktifSevkiyatDetay = sevkBulHer(fsId);
+  ekranGit('sevkiyat-detay');
+}
+
 function balyaSorVeKaydet() {
   const onayli = state.aktifFisler.filter(f => f.durum === 'hazir' || f.durum === 'onaylandi');
+  // Ekleme modunda balya sorma — mevcut sevkiyata direkt ekle
+  if (state._ekleSevkiyatId) {
+    if (onayli.length === 0) { toast('Eklenecek onaylı fiş yok', 2000); return; }
+    if (onayli.filter(fisEksik).length > 0) { toast('⚠ Eksik fiş var — önce düzeltin', 3000); return; }
+    const kg = onayli.filter(f => fisKontrolGerekli(f)).length;
+    if (kg > 0) { toast(`⚠ Kontrol edilmesi gereken ${kg} fiş var`, 3500); return; }
+    sevkiyatKaydet();
+    return;
+  }
   if (onayli.length === 0) { toast('Kayıt edilecek onaylı fiş yok', 2000); return; }
   if (onayli.filter(fisEksik).length > 0) { toast('⚠ Eksik fiş var — önce düzeltin', 3000); return; }
+  const kontrolluk = onayli.filter(f => fisKontrolGerekli(f)).length;
+  if (kontrolluk > 0) { toast(`⚠ Kontrol edilmesi gereken ${kontrolluk} fiş var — lütfen sarı fişleri kontrol edin`, 3500); return; }
   const mbg = document.createElement('div');
   mbg.className = 'modal-bg';
   mbg.innerHTML = `
@@ -2827,6 +2959,12 @@ async function sevkiyatKaydet() {
         foto
       };
     }));
+
+    // Mevcut bir sevkiyata ekleme modu
+    if (state._ekleSevkiyatId) {
+      await sevkiyataEkleUygula(deriler);
+      return;
+    }
 
     const sevkiyat = {
       sevkiyatNo: state.oturumNo,
@@ -3176,15 +3314,16 @@ function gecmisBirlestirBaslat() {
   if (list.length < 2) { toast('En az 2 sevkiyat seçin'); return; }
   const mId = list[0].musteriId;
   if (!list.every(s => s.musteriId === mId)) { toast('⚠ Sadece AYNI müşterinin sevkiyatları birleştirilebilir', 3000); return; }
-  // Toplam balya sor
+  // Toplam balya = seçilenlerin balya toplamı (düzenlenebilir)
+  const balyaToplam = list.reduce((a,s) => a + (parseInt(s.balya) || 0), 0);
   const mbg = document.createElement('div');
   mbg.className = 'modal-bg';
   mbg.innerHTML = `
     <div class="modal" onclick="event.stopPropagation()" style="padding:24px">
       <div class="modal-handle"></div>
       <h3 style="text-align:center;margin-bottom:6px">🔗 ${list.length} Sevkiyat Birleşecek</h3>
-      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px">${escapeHtml(list[0].musteriAd||'')} — tek irsaliyede toplanacak.<br>Toplam kaç balya?</div>
-      <input class="input mono" id="birlesik-balya" type="number" min="0" placeholder="Örn. 24" style="font-size:22px;text-align:center;font-weight:800">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px">${escapeHtml(list[0].musteriAd||'')} — tek irsaliyede toplanacak.<br>Toplam balya (birleşik):</div>
+      <input class="input mono" id="birlesik-balya" type="number" min="0" placeholder="Balya" value="${balyaToplam || ''}" style="font-size:22px;text-align:center;font-weight:800">
       <div class="flex gap-2 mt-3">
         <button class="btn secondary" style="flex:1" onclick="document.querySelector('.modal-bg').remove()">İptal</button>
         <button class="btn gold" style="flex:2" onclick="const b=parseInt(document.getElementById('birlesik-balya').value)||null;document.querySelector('.modal-bg').remove();gecmisBirlestirUygula(${JSON.stringify(ids)}, b)">✓ Birleştir</button>
@@ -3312,6 +3451,8 @@ function ekranSevkiyatDetay() {
           : `<span style="font-size:20px">⏳</span><div style="font-weight:600;color:var(--ink-soft)">Kontrol Bekliyor</div>`}
         ${state.profil?.rol === 'YONETICI' && state.profil?.onayYetkisi && s.kontrolDurumu !== 'onaylandi' ? `<button class="btn green btn-small" style="margin-left:auto" onclick="sevkiyatKontrolOnay('${s.fsId}')">✓ Onayla</button>` : (state.profil?.rol === 'YONETICI' && !state.profil?.onayYetkisi && s.kontrolDurumu !== 'onaylandi' ? `<span style="font-size:11px;color:var(--ink-faint);margin-left:auto">Onay yetkiniz yok</span>` : '')}
       </div>
+
+      ${s.kontrolDurumu !== 'onaylandi' ? `<button class="btn secondary" style="width:100%;margin-bottom:12px;border:1px dashed var(--leather)" onclick="sevkiyataEklemeBaslat('${s.fsId}')">➕ Bu Sevkiyata Ekleme Yap</button>` : ''}
 
       <div class="flex gap-2 mb-3" style="flex-wrap:wrap">
         <button class="btn gold btn-small" onclick="pdfUret('${s.fsId||s.id}', 'A4')">A4 PDF</button>
