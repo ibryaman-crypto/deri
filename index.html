@@ -1765,12 +1765,19 @@ async function musteriSec(id) {
   // Sevkiyat numarası kayıt anında üretilir — boş/atlanan numara oluşmasın
   state.oturumNo = null;
   state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = '';
-  urunKoduDialog();
+  // Ürün kodu her kamera tuşuna basıldığında sorulur — burada direkt çekim ekranına git
+  ekranGit('toplu-cekim');
 }
 
-// ====== ÜRÜN KODU SORMA (sevkiyat girişi) ======
-async function urunKoduDialog(baslik) {
+// Kamera tuşuna basınca: önce ürün kodu ekranı, sonra kamera
+function kameraKoduSor() { urunKoduDialog('Ürün Kodu', 'kamera'); }
+
+// ====== ÜRÜN KODU SORMA ======
+// mod: 'kamera' → seçimden sonra kamerayı aç; aksi halde toplu-cekim ekranına git
+async function urunKoduDialog(baslik, mod) {
+  state._kodDialogMod = mod || 'ekran';
   state._kodHarita = await Storage.get('app:kod_bilgisi') || {};
+  const oncekiVar = !!state.aktifKod;
   const mbg = document.createElement('div');
   mbg.className = 'modal-bg';
   const atts = 'autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-form-type="other" inputmode="text"';
@@ -1785,13 +1792,37 @@ async function urunKoduDialog(baslik) {
         <input class="input" id="uk-cins" placeholder="Cins" ${atts} style="flex:1">
         <input class="input" id="uk-renk" placeholder="Renk" ${atts} style="flex:1">
       </div>
+      ${oncekiVar ? `<div style="font-size:11px;color:var(--ink-faint);margin-bottom:8px">Boş bırakıp "Devam" derseniz önceki koddan (<b class="mono">${escapeHtml(state.aktifKod)}</b>) devam edilir.</div>` : ''}
       <div class="flex gap-2">
-        <button class="btn secondary" onclick="urunKoduDevam(true)" style="flex:1">Kodsuz</button>
-        <button class="btn gold" style="flex:2" onclick="urunKoduDevam(false)">✓ Devam</button>
+        <button class="btn secondary" onclick="urunKoduSecim('otomatik')" style="flex:1">📷 Otomatik Okuma</button>
+        <button class="btn gold" style="flex:2" onclick="urunKoduSecim('devam')">${oncekiVar ? '✓ Devam' : '✓ Kod ile Devam'}</button>
       </div>
     </div>`;
   document.body.appendChild(mbg);
   setTimeout(() => document.getElementById('uk-kod')?.focus(), 100);
+}
+
+async function urunKoduSecim(tip) {
+  const mod = state._kodDialogMod;
+  const kodInput = kodNormalize(document.getElementById('uk-kod')?.value || '');
+  const cins = (document.getElementById('uk-cins')?.value || '').trim().toUpperCase();
+  const renk = (document.getElementById('uk-renk')?.value || '').trim().toUpperCase();
+  if (tip === 'otomatik') {
+    // Otomatik okuma — kod zorlanmaz, OCR her şeyi okur
+    state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = '';
+  } else {
+    // "Devam": kod girildiyse onu kullan, girilmediyse önceki koddan devam et
+    if (kodInput) {
+      state.aktifKod = kodInput;
+      state.aktifKodCins = cins || (state._kodHarita?.[kodInput]?.cins) || '';
+      state.aktifKodRenk = renk || (state._kodHarita?.[kodInput]?.renk) || '';
+      if (cins || renk) { try { await ogrenilenleriKaydet(state.aktifKodCins, kodInput, state.aktifKodRenk); } catch(e){} }
+    }
+    // kodInput boşsa mevcut state.aktifKod korunur (önceki koddan devam)
+  }
+  document.querySelector('.modal-bg')?.remove();
+  if (mod === 'kamera') kameraAc();
+  else ekranGit('toplu-cekim');
 }
 
 function urunKoduBilgiGoster() {
@@ -1926,9 +1957,8 @@ function ekranTopluCekim() {
       ` : `<div style="background:var(--bg-card);border:1px solid var(--line);border-radius:12px;overflow:hidden">${fisKartlari}</div>`}
     </div>
     <input type="file" accept="image/*" capture="environment" class="hidden-input" id="kamera-input" onchange="fisCekildi(this.files[0])">
-    <button onclick="urunKoduDialog('Yeni Ürün Kodu')" style="position:fixed;bottom:30px;left:20px;background:var(--leather-dark);color:#fff;border:none;padding:12px 16px;border-radius:999px;font-size:13px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,0.25);z-index:60">🏷️ Yeni Kod</button>
     <button class="manual-fab" onclick="manuelFisEkle()">＋ Manuel Giriş</button>
-    <div class="capture-fab" onclick="kameraAc()">
+    <div class="capture-fab" onclick="kameraKoduSor()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
         <circle cx="12" cy="13" r="4"/>
@@ -2764,6 +2794,13 @@ function ekranInceleme() {
       <div style="width:80px"></div>
     </div>
     <div class="content">
+      ${(() => {
+        if (!state._ekleSevkiyatId) return '';
+        const mevcut = sevkBulHer(state._ekleSevkiyatId);
+        if (!mevcut) return '';
+        return `<div style="background:var(--gold-soft,#fef6e4);border:1px solid var(--leather);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:13px">
+          ➕ <b>${escapeHtml(mevcut.sevkiyatNo)}</b> sevkiyatına ekleniyor — mevcut <b>${(mevcut.deriler||[]).length}</b> paket + yeni <b>${onayli.length}</b> paket. Kaydedince toplam <b>${(mevcut.deriler||[]).length + onayli.length}</b> paket olacak.</div>`;
+      })()}
       <div class="summary">
         <div class="customer-name">${escapeHtml(m.ad)}</div>
         <div class="code">${escapeHtml(m.kod)}</div>
@@ -2806,9 +2843,8 @@ function ekranInceleme() {
     </div>
     <div class="bottom-bar">
       <button class="btn secondary" onclick="ekranGit('toplu-cekim');" style="padding:14px 10px">Daha Çek</button>
-      <button class="btn secondary" onclick="urunKoduDialog('Yeni Ürün Kodu')" style="padding:14px 10px">🏷️ Yeni Kod</button>
       <button class="btn secondary" onclick="notEkleDialog()" style="padding:14px 10px">📝 Not</button>
-      <button class="btn gold" onclick="balyaSorVeKaydet()" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi}` : (state._ekleSevkiyatId ? '➕ Ekle' : 'Kaydet')}</button>
+      <button class="btn gold" onclick="balyaSorVeKaydet()" style="flex:1.4" ${(onayli.length === 0 || eksikSayisi > 0) ? 'disabled' : ''}>${eksikSayisi > 0 ? `⚠ ${eksikSayisi}` : (state._ekleSevkiyatId ? '➕ Sevkiyata Ekle' : 'Kaydet')}</button>
     </div>`;
 }
 
@@ -3326,7 +3362,7 @@ function gecmisBirlestirBaslat() {
       <input class="input mono" id="birlesik-balya" type="number" min="0" placeholder="Balya" value="${balyaToplam || ''}" style="font-size:22px;text-align:center;font-weight:800">
       <div class="flex gap-2 mt-3">
         <button class="btn secondary" style="flex:1" onclick="document.querySelector('.modal-bg').remove()">İptal</button>
-        <button class="btn gold" style="flex:2" onclick="const b=parseInt(document.getElementById('birlesik-balya').value)||null;document.querySelector('.modal-bg').remove();gecmisBirlestirUygula(${JSON.stringify(ids)}, b)">✓ Birleştir</button>
+        <button class="btn gold" style="flex:2" onclick="const b=parseInt(document.getElementById('birlesik-balya').value)||null;document.querySelector('.modal-bg').remove();gecmisBirlestirUygula([${ids.map(x=>`'${x}'`).join(',')}], b)">✓ Birleştir</button>
       </div>
     </div>`;
   document.body.appendChild(mbg);
@@ -4386,12 +4422,23 @@ async function basla() {
     } else {
       state.ekran = 'musteri-listesi';
       try {
+        // Kendi sevkiyatları (her zaman)
         const snap = await db.collection('sevkiyatlar')
           .where('personelId', '==', user.uid)
           .limit(200).get();
-        state.sevkiyatlar = snap.docs
-          .map(d => ({ ...d.data(), fsId: d.id }))
-          .sort((a,b) => (b.tarih||0) - (a.tarih||0));
+        const harita = {};
+        snap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
+        // Bugünün TÜM sevkiyatları — saat 21:00'e kadar tüm personel görebilir (tüm cihazlar)
+        const simdi = new Date();
+        const bugun0 = new Date(simdi.getFullYear(), simdi.getMonth(), simdi.getDate()).getTime();
+        const saat21 = bugun0 + 21 * 60 * 60 * 1000;
+        if (simdi.getTime() < saat21) {
+          try {
+            const gSnap = await db.collection('sevkiyatlar').where('tarih', '>=', bugun0).limit(300).get();
+            gSnap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
+          } catch(e2) { console.warn('Bugünkü sevkiyatlar:', e2.message); }
+        }
+        state.sevkiyatlar = Object.values(harita).sort((a,b) => (b.tarih||0) - (a.tarih||0));
       } catch(e) { console.warn('Sevkiyat yüklenemedi:', e.message); state.sevkiyatlar = []; }
     }
 
