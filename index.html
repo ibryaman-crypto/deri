@@ -615,6 +615,7 @@ ocrAyarYukle(); // uygulama açılışında yükle
 function fisUyarilari(f) {
   const v = f?.veri; if (!v) return [];
   const uyarilar = [];
+  if (f._mukerrer) uyarilar.push(`⚠ Mükerrer olabilir — aynı cins + seri no (${f._mukerrer}) zaten var`);
   const adet = v.deriAdedi?.deger || 0;
   const dm2 = v.toplamYuzeyDm2?.deger || 0;
   const ocrOrt = v.ortalamaAlanDm2?.deger || 0;
@@ -1199,6 +1200,8 @@ function toast(metin, sure = 2200) {
   el.className = 'toast'; el.textContent = metin;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), sure);
+  // Uyarı/hata içeren her bildirimde 0,2 sn titreşim
+  if (/[⚠❌]|hata|uyar|eksik|mükerrer|başarısız|geçersiz|bulunamad|edilemedi/i.test(metin)) titret(200);
 }
 
 // Geri-al butonlu toast. sure=0 → süresiz (elle kapatılana / işlem yapılana kadar)
@@ -1780,23 +1783,24 @@ async function urunKoduDialog(baslik, mod) {
   const oncekiVar = !!state.aktifKod;
   const mbg = document.createElement('div');
   mbg.className = 'modal-bg';
+  // Klavye açılınca alttaki butonlar kaybolmasın diye ekranın ÜSTÜNE yasla
+  mbg.style.alignItems = 'flex-start';
   const atts = 'autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-form-type="other" inputmode="text"';
+  const enterGec = (hedef) => `onkeydown="if(event.key==='Enter'){event.preventDefault();${hedef}}"`;
   mbg.innerHTML = `
-    <div class="modal" onclick="event.stopPropagation()" style="padding:16px 18px 22px">
-      <div class="modal-handle"></div>
-      <div style="font-weight:800;font-size:17px;margin-bottom:8px">${baslik || 'Ürün Kodu'}</div>
+    <div class="modal" onclick="event.stopPropagation()" style="margin-top:12px;border-radius:16px;padding:14px 16px 18px">
       <input class="input mono" id="uk-kod" placeholder="Ürün Kodu (örn. 4160 200)" oninput="urunKoduBilgiGoster()" ${atts}
-        style="font-size:17px;font-weight:700">
-      <div id="uk-onizle" style="font-size:12px;margin:4px 2px 8px;min-height:16px;color:var(--ink-faint)"></div>
-      <div class="flex gap-2" style="margin-bottom:10px">
-        <input class="input" id="uk-cins" placeholder="Cins" ${atts} style="flex:1">
-        <input class="input" id="uk-renk" placeholder="Renk" ${atts} style="flex:1">
+        ${enterGec("document.getElementById('uk-cins').focus()")} style="font-size:18px;font-weight:700">
+      <div class="flex gap-2" style="margin-top:8px">
+        <input class="input" id="uk-cins" placeholder="Cins" ${atts} ${enterGec("document.getElementById('uk-renk').focus()")} style="flex:1">
+        <input class="input" id="uk-renk" placeholder="Renk" ${atts} ${enterGec("urunKoduSecim('devam')")} style="flex:1">
       </div>
-      ${oncekiVar ? `<div style="font-size:11px;color:var(--ink-faint);margin-bottom:8px">Boş bırakıp "Devam" derseniz önceki koddan (<b class="mono">${escapeHtml(state.aktifKod)}</b>) devam edilir.</div>` : ''}
-      <div class="flex gap-2">
+      <div class="flex gap-2" style="margin-top:10px">
         <button class="btn secondary" onclick="urunKoduSecim('otomatik')" style="flex:1">📷 Otomatik Okuma</button>
         <button class="btn gold" style="flex:2" onclick="urunKoduSecim('devam')">${oncekiVar ? '✓ Devam' : '✓ Kod ile Devam'}</button>
       </div>
+      <div id="uk-onizle" style="font-size:12px;margin:8px 2px 0;min-height:14px;color:var(--ink-faint)"></div>
+      ${oncekiVar ? `<div style="font-size:15px;font-weight:800;color:var(--leather-dark);margin-top:8px;text-align:center">Boş bırakıp "Devam" → önceki koddan (${escapeHtml(state.aktifKod)}) devam</div>` : ''}
     </div>`;
   document.body.appendChild(mbg);
   setTimeout(() => document.getElementById('uk-kod')?.focus(), 100);
@@ -2360,6 +2364,23 @@ function dogrulamaGerekiyor(veri) {
   return false;
 }
 
+// Mükerrer fiş kontrolü — aynı cins + aynı seri no daha önce çekildiyse işaretle
+function mukerrerKontrol(fis) {
+  const seri = (fis.veri?.seriNo?.deger || '').toString().replace(/\s+/g,'').trim();
+  if (!seri) { fis._mukerrer = null; return; }
+  const cins = (fis.veri?.cins?.deger || '').toUpperCase().trim();
+  const dup = state.aktifFisler.find(f => f !== fis
+    && (f.durum === 'hazir' || f.durum === 'onaylandi' || f.durum === 'isleniyor')
+    && (f.veri?.cins?.deger || '').toUpperCase().trim() === cins
+    && (f.veri?.seriNo?.deger || '').toString().replace(/\s+/g,'').trim() === seri);
+  if (dup) {
+    fis._mukerrer = seri;
+    toast(`⚠ Mükerrer olabilir — aynı cins, seri no ${seri} zaten çekilmiş`, 4000);
+  } else {
+    fis._mukerrer = null;
+  }
+}
+
 async function islemKuyruguIsle() {
   if (kuyrukAktif) return;
   const bekleyen = state.aktifFisler.find(f => f.durum === 'beklemede');
@@ -2384,6 +2405,8 @@ async function islemKuyruguIsle() {
     bekleyen.islenmisGorsel = sonuc.islenmisGorsel;
     // Doğrulama gerekiyorsa özel işaret
     bekleyen.dogrulamaGerek = dogrulamaGerekiyor(sonuc.veri);
+    // Mükerrer fiş kontrolü: aynı cins + aynı seri no zaten çekilmişse uyar
+    mukerrerKontrol(bekleyen);
     bekleyen.durum = 'hazir';
     titret(30);
   } catch (e) {
@@ -3048,6 +3071,7 @@ async function sevkiyatKaydet() {
   } catch(e) {
     console.error('sevkiyatKaydet hata:', e);
     // Hatayı kullanıcıya tam olarak göster
+    titret(200);
     const hataMetin = e.message || String(e);
     const mbg = document.createElement('div');
     mbg.className = 'modal-bg';
