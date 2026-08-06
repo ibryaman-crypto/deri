@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#3D2817">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Deri Sevkiyat">
 <title>Deri Sevkiyat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -338,11 +341,15 @@ window.addEventListener('popstate', (e) => {
   // Modal açıksa önce onu kapat
   const modal = document.querySelector('.modal-bg');
   if (modal) { modal.remove(); history.pushState({}, '', ''); return; }
-  // Kaydedilmemiş fiş varsa onay sor
+  // Kaydedilmemiş fiş varsa çıkışı engelle — 2 kez sor, çıkılırsa veriyi sakla
   if (state.aktifFisler?.length > 0) {
-    history.pushState({}, '', ''); // geri gitmesini engelle
-    if (!confirm('Bu oturumdaki tüm fişler kaybolacak. Emin misiniz?')) return;
+    history.pushState({}, '', ''); // geri gitmesini her durumda engelle
+    durumKaydet(); // her ihtimale karşı önce kaydet
+    if (!confirm('⚠ Çıkarsanız bu oturumdaki çekilen fişlerden çıkılır. Devam edilsin mi?')) return;
+    if (!confirm('Emin misiniz? Bu ekrandan çıkılacak. (Fişler saklanır, uygulamayı açınca devam edebilirsiniz.)')) return;
+    durumKaydet(); // çıkış öncesi tekrar sakla — fotoğraflarla birlikte
     state.aktifMusteri = null; state.aktifFisler = []; state.oturumNo = null;
+    state.aktifKod = null; state._ekleSevkiyatId = null;
     state.ekranGecmisi = [];
     ekranGit(state.profil?.rol === 'YONETICI' ? 'yonetici' : 'musteri-listesi');
     return;
@@ -350,32 +357,45 @@ window.addEventListener('popstate', (e) => {
   geriDon();
 });
 
-// Kaydedilmemiş durumu sessionStorage'a yaz
+// Kaydedilmemiş durumu localStorage'a yaz — tarayıcı tamamen kapansa bile korunur
 function durumKaydet() {
+  const temel = {
+    ekran: state.ekran,
+    ekranGecmisi: state.ekranGecmisi,
+    aktifMusteri: state.aktifMusteri,
+    oturumNo: state.oturumNo,
+    yoneticiSekme: state.yoneticiSekme,
+    _sevkiyatNot: state._sevkiyatNot || '',
+    aktifKod: state.aktifKod || null, aktifKodCins: state.aktifKodCins || '', aktifKodRenk: state.aktifKodRenk || '',
+    _ekleSevkiyatId: state._ekleSevkiyatId || null,
+    aktifSevkiyatDetayId: state.aktifSevkiyatDetay?.fsId || null,
+  };
+  // Önce FOTOĞRAFLI tam kayıt dene (veri kaybını önlemek için)
+  const tamFisler = (state.aktifFisler || []).map(f => ({
+    id: f.id, durum: f.durum, veri: f.veri, kaynak: f.kaynak, hata: f.hata,
+    _kontrolEdildi: f._kontrolEdildi, _mukerrer: f._mukerrer, foto: f.foto || null
+  }));
   try {
-    const kayit = {
-      ekran: state.ekran,
-      ekranGecmisi: state.ekranGecmisi,
-      aktifMusteri: state.aktifMusteri,
-      aktifFisler: state.aktifFisler?.map(f => ({
-        durum: f.durum, veri: f.veri, kaynak: f.kaynak,
-        foto: null // fotoğraflar çok büyük, kaydetme
-      })) || [],
-      oturumNo: state.oturumNo,
-      yoneticiSekme: state.yoneticiSekme,
-      _sevkiyatNot: state._sevkiyatNot || '',
-      aktifSevkiyatDetayId: state.aktifSevkiyatDetay?.fsId || null,
-    };
-    sessionStorage.setItem('ds_durum', JSON.stringify(kayit));
-  } catch(e) {}
+    localStorage.setItem('ds_durum', JSON.stringify({ ...temel, aktifFisler: tamFisler }));
+    return;
+  } catch(e) {
+    // Kota aşıldı → fotoğrafsız kaydet (en azından veriler kaybolmasın)
+    try {
+      const fotosuz = tamFisler.map(f => ({ ...f, foto: null }));
+      localStorage.setItem('ds_durum', JSON.stringify({ ...temel, aktifFisler: fotosuz }));
+    } catch(e2) {}
+  }
 }
 
 function durumYukle() {
   try {
-    const raw = sessionStorage.getItem('ds_durum');
+    const raw = localStorage.getItem('ds_durum') || sessionStorage.getItem('ds_durum');
     if (!raw) return null;
     return JSON.parse(raw);
   } catch(e) { return null; }
+}
+function durumTemizle() {
+  try { localStorage.removeItem('ds_durum'); sessionStorage.removeItem('ds_durum'); } catch(e) {}
 }
 
 history.replaceState({ ekran: 'giris' }, '', '');
@@ -389,6 +409,35 @@ window.addEventListener('beforeunload', (e) => {
 function kullaniciAdiGoster(email) {
   if (!email) return '?';
   return email.replace(/@deri\.app$/i, '').replace(/@.*$/, '');
+}
+
+// ====== PWA: uygulama olarak kurulabilir yap (standalone) ======
+(function pwaKur() {
+  try {
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512'><rect width='512' height='512' rx='110' fill='#3D2817'/><text x='256' y='350' font-size='300' text-anchor='middle' fill='#E0A94F' font-family='serif'>◈</text></svg>";
+    const ikon = 'data:image/svg+xml,' + encodeURIComponent(svg);
+    const link = document.createElement('link'); link.rel = 'apple-touch-icon'; link.href = ikon; document.head.appendChild(link);
+    const manifest = {
+      name: 'Deri Sevkiyat', short_name: 'Deri', start_url: location.pathname,
+      display: 'standalone', orientation: 'portrait',
+      background_color: '#3D2817', theme_color: '#3D2817',
+      icons: [{ src: ikon, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }]
+    };
+    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+    const mlink = document.createElement('link'); mlink.rel = 'manifest'; mlink.href = URL.createObjectURL(blob);
+    document.head.appendChild(mlink);
+    // Android'de kurulum önerisini yakala (ileride "Uygulamayı Kur" butonu için)
+    window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._pwaPrompt = e; });
+  } catch(e) {}
+})();
+
+async function uygulamayiKur() {
+  if (window._pwaPrompt) {
+    window._pwaPrompt.prompt();
+    window._pwaPrompt = null;
+  } else {
+    toast('Menüden "Ana ekrana ekle" ile kurabilirsiniz', 3500);
+  }
 }
 
 // ====== KALICI SAKLAMA ======
@@ -2107,6 +2156,7 @@ function kameraOnayla() {
   if (!fotoData) { kameraTekrar(); return; }
   const fis = { id: Date.now() + Math.random(), durum: 'beklemede', foto: fotoData, veri: null, hata: null, kaynak: null, olusturma: Date.now() };
   state.aktifFisler.push(fis);
+  durumKaydet(); // fotoğrafı hemen sakla — veri kaybını önle
   const sayac = document.getElementById('kamera-sayac');
   if (sayac) sayac.innerHTML = `${state.aktifFisler.length}<span style="font-size:15px;font-weight:700;display:block;margin-top:-4px">fiş</span>`;
   kameraTekrar();      // onay ekranını kapat, canlı görüntüye dön
@@ -2416,6 +2466,7 @@ async function islemKuyruguIsle() {
   }
   kuyrukAktif = false;
   render();
+  durumKaydet(); // her fiş okununca oturumu (fotoğraflı) sakla — veri kaybını önle
   setTimeout(islemKuyruguIsle, 100);
 }
 
@@ -2423,6 +2474,7 @@ async function oturumIptal() {
   if (state.aktifFisler.length > 0 && !confirm('Bu oturumdaki tüm fişler kaybolacak. Emin misiniz?')) return;
   state.aktifMusteri = null; state.aktifFisler = []; state.oturumNo = null;
   state._ekleSevkiyatId = null; state.aktifKod = null;
+  durumTemizle();
   state.ekranGecmisi = []; ekranGit('musteri-listesi');
 }
 
@@ -2935,6 +2987,7 @@ async function sevkiyataEkleUygula(yeniDerilerFotolu) {
   [s, state.aktifSevkiyatDetay].forEach(o => { if (o && o.fsId === fsId) Object.assign(o, guncel); });
   state.aktifFisler = [];
   state._ekleSevkiyatId = null; state.aktifKod = null;
+  durumTemizle();
   titret(80);
   toast(`✓ ${yeniDeriler.length} paket sevkiyata eklendi`, 2500);
   state.aktifSevkiyatDetay = sevkBulHer(fsId);
@@ -3065,6 +3118,7 @@ async function sevkiyatKaydet() {
     state._sevkiyatNot = '';
     state._balya = null;
     state._sonBirlestirmeFis = null;
+    durumTemizle(); // kaydedildi → taslağı sil
     titret(80);
     basariDialog(sevkiyat);
 
@@ -3309,12 +3363,15 @@ function ekranSevkiyatListesi() {
     .sort((a, b) => b.tarih - a.tarih);
 
   const araBar = `
-    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px">
-      ${GECMIS_ARALIKLARI.map(a => `
-        <button onclick="gecmisAraligiDegistir(${a.gun})"
-          style="flex:0 0 auto;font-size:12px;padding:6px 12px;border-radius:999px;cursor:pointer;border:1px solid var(--line);
-          ${a.gun === gun ? 'background:var(--leather-dark);color:#fff;border-color:var(--leather-dark);font-weight:700' : 'background:var(--bg-card);color:var(--ink-soft)'}">
-          ${a.etiket}</button>`).join('')}
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+      <div style="display:flex;gap:6px;overflow-x:auto;flex:1;padding-bottom:4px">
+        ${GECMIS_ARALIKLARI.map(a => `
+          <button onclick="gecmisAraligiDegistir(${a.gun})"
+            style="flex:0 0 auto;font-size:12px;padding:6px 12px;border-radius:999px;cursor:pointer;border:1px solid var(--line);
+            ${a.gun === gun ? 'background:var(--leather-dark);color:#fff;border-color:var(--leather-dark);font-weight:700' : 'background:var(--bg-card);color:var(--ink-soft)'}">
+            ${a.etiket}</button>`).join('')}
+      </div>
+      <button onclick="gecmisYenile()" style="flex:0 0 auto;font-size:16px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--bg-card);cursor:pointer">🔄</button>
     </div>`;
 
   const secModu = state._birlestirmeModu;
@@ -3339,9 +3396,9 @@ function ekranSevkiyatListesi() {
 
   return `
     <div class="topbar">
-      <button onclick="${secModu ? 'gecmisBirlestirmeModu()' : 'geriDon()'};" style="font-size:13px;color:var(--leather-dark);font-weight:600">${secModu ? '✕ Vazgeç' : '‹ Geri'}</button>
+      <button onclick="${secModu ? 'gecmisBirlestirmeModu()' : 'geriDon()'};" style="font-size:13px;color:var(--bg-soft);font-weight:600">${secModu ? '✕ Vazgeç' : '‹ Geri'}</button>
       <div class="brand">${secModu ? 'Birleştir' : 'Geçmiş'}</div>
-      <button onclick="gecmisBirlestirmeModu()" style="font-size:13px;color:var(--leather-dark);font-weight:700;padding:6px 10px">${secModu ? '' : '🔗 Birleştir'}</button>
+      <button onclick="gecmisBirlestirmeModu()" style="font-size:13px;color:var(--gold);font-weight:700;padding:6px 10px;border-color:var(--gold)">${secModu ? '' : '🔗 Birleştir'}</button>
     </div>
     <div class="content" style="${secModu ? 'padding-bottom:80px' : ''}">
       ${secModu ? '<div style="background:var(--gold-soft,#fef6e4);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">Aynı müşteriye giden 2+ sevkiyat seçin — tek irsaliyede birleşecek.</div>' : araBar}
@@ -4408,6 +4465,37 @@ async function apiAnahtarlariniYukle() {
   return !!(await Storage.get('app:claudeApiKey'));
 }
 
+// Personel sevkiyat geçmişini (kendi + bugünün tümü <21:00) yükle — hata dayanıklı
+async function personelSevkiyatYukle() {
+  const uid = state.kullanici?.uid;
+  if (!uid) return;
+  const harita = {};
+  // 1) Kendi sevkiyatları
+  try {
+    const snap = await db.collection('sevkiyatlar').where('personelId', '==', uid).limit(200).get();
+    snap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
+  } catch(e) { console.warn('Kendi sevkiyatları:', e.message); }
+  // 2) Bugünün TÜM sevkiyatları (saat 21:00'e kadar)
+  try {
+    const simdi = new Date();
+    const bugun0 = new Date(simdi.getFullYear(), simdi.getMonth(), simdi.getDate()).getTime();
+    const saat21 = bugun0 + 21 * 60 * 60 * 1000;
+    if (simdi.getTime() < saat21) {
+      const gSnap = await db.collection('sevkiyatlar').where('tarih', '>=', bugun0).limit(300).get();
+      gSnap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
+    }
+  } catch(e2) { console.warn('Bugünkü sevkiyatlar:', e2.message); }
+  // Yerelde kaydettiklerimizi de koru (silinmediyse)
+  (state.sevkiyatlar || []).forEach(s => { if (s.fsId && !harita[s.fsId]) harita[s.fsId] = s; });
+  state.sevkiyatlar = Object.values(harita).sort((a,b) => (b.tarih||0) - (a.tarih||0));
+}
+
+async function gecmisYenile() {
+  toast('🔄 Yenileniyor...', 1500);
+  await personelSevkiyatYukle();
+  render();
+}
+
 // ====== UYGULAMA BAŞLATMA — AUTH STATE ======
 async function basla() {
   auth.onAuthStateChanged(async user => {
@@ -4445,25 +4533,7 @@ async function basla() {
       yoneticiDinlemeBaslat(); // kota temizliği snapshot verisi gelince çalışır
     } else {
       state.ekran = 'musteri-listesi';
-      try {
-        // Kendi sevkiyatları (her zaman)
-        const snap = await db.collection('sevkiyatlar')
-          .where('personelId', '==', user.uid)
-          .limit(200).get();
-        const harita = {};
-        snap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
-        // Bugünün TÜM sevkiyatları — saat 21:00'e kadar tüm personel görebilir (tüm cihazlar)
-        const simdi = new Date();
-        const bugun0 = new Date(simdi.getFullYear(), simdi.getMonth(), simdi.getDate()).getTime();
-        const saat21 = bugun0 + 21 * 60 * 60 * 1000;
-        if (simdi.getTime() < saat21) {
-          try {
-            const gSnap = await db.collection('sevkiyatlar').where('tarih', '>=', bugun0).limit(300).get();
-            gSnap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
-          } catch(e2) { console.warn('Bugünkü sevkiyatlar:', e2.message); }
-        }
-        state.sevkiyatlar = Object.values(harita).sort((a,b) => (b.tarih||0) - (a.tarih||0));
-      } catch(e) { console.warn('Sevkiyat yüklenemedi:', e.message); state.sevkiyatlar = []; }
+      await personelSevkiyatYukle();
     }
 
     // Kayıtlı oturumu geri yükle
@@ -4473,8 +4543,15 @@ async function basla() {
       }
       if (kayitli.aktifFisler?.length > 0) {
         state.aktifFisler = kayitli.aktifFisler;
+        // Fotoğrafı olup verisi olmayan (yarım kalmış OCR) fişleri tekrar işle
+        if (state.aktifFisler.some(f => f.durum === 'beklemede' || f.durum === 'isleniyor')) {
+          state.aktifFisler.forEach(f => { if (f.durum === 'isleniyor') f.durum = 'beklemede'; });
+          setTimeout(() => islemKuyruguIsle(), 500);
+        }
       }
       if (kayitli.oturumNo) state.oturumNo = kayitli.oturumNo;
+      if (kayitli.aktifKod !== undefined) { state.aktifKod = kayitli.aktifKod; state.aktifKodCins = kayitli.aktifKodCins || ''; state.aktifKodRenk = kayitli.aktifKodRenk || ''; }
+      if (kayitli._ekleSevkiyatId) state._ekleSevkiyatId = kayitli._ekleSevkiyatId;
       if (kayitli.yoneticiSekme) state.yoneticiSekme = kayitli.yoneticiSekme;
       if (kayitli._sevkiyatNot) state._sevkiyatNot = kayitli._sevkiyatNot;
       if (kayitli.aktifSevkiyatDetayId) {
