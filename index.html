@@ -8,6 +8,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Deri Sevkiyat">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
 <title>Deri Sevkiyat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -414,20 +416,26 @@ function kullaniciAdiGoster(email) {
 // ====== PWA: uygulama olarak kurulabilir yap (standalone) ======
 (function pwaKur() {
   try {
-    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512'><rect width='512' height='512' rx='110' fill='#3D2817'/><text x='256' y='350' font-size='300' text-anchor='middle' fill='#E0A94F' font-family='serif'>◈</text></svg>";
-    const ikon = 'data:image/svg+xml,' + encodeURIComponent(svg);
-    const link = document.createElement('link'); link.rel = 'apple-touch-icon'; link.href = ikon; document.head.appendChild(link);
-    const manifest = {
-      name: 'Deri Sevkiyat', short_name: 'Deri', start_url: location.pathname,
-      display: 'standalone', orientation: 'portrait',
-      background_color: '#3D2817', theme_color: '#3D2817',
-      icons: [{ src: ikon, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }]
-    };
-    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-    const mlink = document.createElement('link'); mlink.rel = 'manifest'; mlink.href = URL.createObjectURL(blob);
-    document.head.appendChild(mlink);
-    // Android'de kurulum önerisini yakala (ileride "Uygulamayı Kur" butonu için)
+    // Service worker (çevrimdışı açılış) — service-worker.js dosyası yüklüyse kaydolur
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => { navigator.serviceWorker.register('service-worker.js').catch(() => {}); });
+    }
     window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._pwaPrompt = e; });
+    // Statik manifest.json barındırılmıyorsa (tek dosya kullanımı) çalışma-zamanı manifest üret
+    fetch('manifest.json', { method: 'HEAD' }).then(r => { if (!r.ok) throw 0; }).catch(() => {
+      document.querySelectorAll('link[rel="manifest"]').forEach(l => l.remove());
+      const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512'><rect width='512' height='512' rx='110' fill='#3D2817'/><text x='256' y='350' font-size='300' text-anchor='middle' fill='#E0A94F' font-family='serif'>◈</text></svg>";
+      const ikon = 'data:image/svg+xml,' + encodeURIComponent(svg);
+      const manifest = {
+        name: 'Deri Sevkiyat', short_name: 'Deri', start_url: location.pathname,
+        display: 'standalone', orientation: 'portrait', background_color: '#3D2817', theme_color: '#3D2817',
+        icons: [{ src: ikon, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }]
+      };
+      const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+      const mlink = document.createElement('link'); mlink.rel = 'manifest'; mlink.href = URL.createObjectURL(blob);
+      document.head.appendChild(mlink);
+      const al = document.createElement('link'); al.rel = 'apple-touch-icon'; al.href = ikon; document.head.appendChild(al);
+    });
   } catch(e) {}
 })();
 
