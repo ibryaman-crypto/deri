@@ -1235,6 +1235,17 @@ function tarihKisa(z) {
   const d = new Date(z);
   return `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
 }
+// Müşterinin tercih ettiği birim — 'dm2' veya 'ft2'
+function aktifBirim(s) {
+  return (s?.musteriiBirim) || (state.aktifMusteri?.tercihBirim) || 'dm2';
+}
+// Tercih edilen birimde değer + etiket döndür (diğer birim hiç gösterilmez)
+function birimDeger(dm2, ft2, s) {
+  return aktifBirim(s) === 'ft2'
+    ? { deger: (Number(ft2) || 0).toFixed(2), etiket: 'ft²' }
+    : { deger: sayiFormatla(Number(dm2) || 0), etiket: 'dm²' };
+}
+
 function sayiFormatla(n) {
   return Math.round(n).toLocaleString('tr-TR');
 }
@@ -2025,7 +2036,7 @@ function ekranTopluCekim() {
       <div style="width:28px;text-align:center;font-weight:700;color:var(--ink-faint)">${sira}</div>
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.cins.deger||'?'} · ${v.renk.deger||'?'}</div>
-        <div style="font-size:12px;color:var(--ink-soft);margin-top:2px">${v.kod.deger||'-'} · ${v.deriAdedi.deger}ad · <b>${(v.toplamYuzeyDm2?.deger||0).toFixed(0)}</b>dm² · ${(v.toplamYuzeyFt2?.deger||0).toFixed(2)}ft²</div>
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:2px">${v.kod.deger||'-'} · ${v.deriAdedi.deger}ad · <b>${birimDeger(v.toplamYuzeyDm2?.deger, v.toplamYuzeyFt2?.deger).deger}</b> ${birimDeger(v.toplamYuzeyDm2?.deger, v.toplamYuzeyFt2?.deger).etiket}</div>
       </div>
       <div style="flex-shrink:0">${durum}</div>
     </div>`;
@@ -2516,9 +2527,10 @@ async function otomatikTespitKabul() {
   state.aktifKodCins = cins; state.aktifKodRenk = renk;
   state._otomatikMod = false; // artık elle girilmiş gibi davran
   if (kod && (cins || renk)) { try { await ogrenilenleriKaydet(cins, kod, renk); } catch(e) {} }
-  // Zaten okunmuş fişlere de uygula (kalite/ECO dokunulmaz)
+  // SADECE bu onayı bekleyen fiş(ler)e uygula — daha önceki fişlerin kodu DEĞİŞMEZ
   state.aktifFisler.forEach(f => {
-    if (!f.veri) return;
+    if (!f.veri || !f._otomatikBekliyor) return;
+    f._otomatikBekliyor = false;
     if (kod) { f.veri.kod.deger = kod; f.veri.kod.guven = 0.99; }
     if (cins) { f.veri.cins.deger = cins; f.veri.cins.guven = 0.99; }
     if (renk) { f.veri.renk.deger = renk; f.veri.renk.guven = 0.99; }
@@ -2577,6 +2589,7 @@ async function islemKuyruguIsle() {
       const tr = (sonuc.veri.renk?.deger || '').toUpperCase().trim();
       if (tk || tc || tr) {
         state._otomatikOnaylandi = true; // tekrar sorma
+        bekleyen._otomatikBekliyor = true; // onay bu fişe uygulanacak
         setTimeout(() => otomatikTespitOnay(tk, tc, tr), 300);
       }
     }
@@ -2729,8 +2742,8 @@ function fisDuzeltModal(fis) {
 
       <!-- TOPLAM YÜZEY -->
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('d-toplamdm','d-toplamft')" value="${v.toplamYuzeyDm2?.deger ? Math.round(v.toplamYuzeyDm2.deger) : ''}"></div>
-        <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamft" type="number" step="0.25" value="${v.toplamYuzeyFt2?.deger ? v.toplamYuzeyFt2.deger.toFixed(2) : ''}"></div>
+        <div class="input-group grow" ${anaBirim === 'ft2' ? 'style="display:none"' : ''}><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('d-toplamdm','d-toplamft')" value="${v.toplamYuzeyDm2?.deger ? Math.round(v.toplamYuzeyDm2.deger) : ''}"></div>
+        <div class="input-group grow" ${anaBirim === 'dm2' ? 'style="display:none"' : ''}><label class="input-label">Toplam ft²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamft" type="number" step="0.25" value="${v.toplamYuzeyFt2?.deger ? v.toplamYuzeyFt2.deger.toFixed(2) : ''}"></div>
       </div>
 
       ${fis.hamMetin ? `<details class="mt-3"><summary style="cursor:pointer;font-size:12px;color:var(--ink-faint)">OCR ham çıktısı</summary><pre style="font-size:11px;overflow:auto;max-height:120px;margin-top:6px;background:var(--ink);color:#d6c8a8;padding:8px;border-radius:6px">${escapeHtml(fis.hamMetin)}</pre></details>` : ''}
@@ -2805,18 +2818,9 @@ function yuzeyKaldir() {
   }
 }
 
-// Seri çekim: Onayla → modalı kapat → kamerayı aç (sadece toplu-cekim ekranındaysa)
+// Fiş kontrolü bitince listeye dön — kamera otomatik AÇILMAZ
 async function fisOnaylaVeDevam(idx) {
   await fisOnayla(idx);
-  if (state.ekran !== 'toplu-cekim') return;
-  setTimeout(() => {
-    const kameraInput = document.getElementById('kamera-input');
-    if (kameraInput) {
-      kameraInput.value = '';
-      kameraInput.click();
-      titret(40);
-    }
-  }, 300);
 }
 
 async function fisOnayla(idx) {
@@ -2933,8 +2937,7 @@ function grupKartiHtml(g, ctx) {
       </div>
       <div style="display:flex;gap:16px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:14px">
         <span><b>${g.toplamAdet}</b> <span style="font-size:11px;color:var(--ink-soft)">adet</span></span>
-        <span><b>${sayiFormatla(g.toplamDm2)}</b> <span style="font-size:11px;color:var(--ink-soft)">dm²</span></span>
-        <span style="color:var(--ink-faint)">${g.toplamFt2.toFixed(2)} ft²</span>
+        <span><b>${birimDeger(g.toplamDm2, g.toplamFt2).deger}</b> <span style="font-size:11px;color:var(--ink-soft)">${birimDeger(g.toplamDm2, g.toplamFt2).etiket}</span></span>
       </div>
     </div>`;
 }
@@ -3030,9 +3033,8 @@ function ekranInceleme() {
           <div class="item"><div class="value">${onayli.length}</div><div class="label">Paket</div></div>
           <div class="item"><div class="value">${toplamAdet}</div><div class="label">Deri</div></div>
           <div class="item">
-            <div class="value">${toplamDm2.toFixed(0)}</div>
-            <div class="label">dm²</div>
-            <div style="font-size:10px;opacity:0.7">${toplamFt2.toFixed(2)} ft²</div>
+            <div class="value">${birimDeger(toplamDm2, toplamFt2).deger}</div>
+            <div class="label">${birimDeger(toplamDm2, toplamFt2).etiket}</div>
           </div>
         </div>
         ${ecoGruplar.length > 0 ? `
@@ -3212,7 +3214,7 @@ async function sevkiyatKaydet() {
         cins: v.cins?.deger || '', renk: v.renk?.deger || '', kod: v.kod?.deger || '',
         kalite: v.kalite?.deger || '', seriNo: v.seriNo?.deger || '', barkod: v.barkod?.deger || '',
         deriAdedi: v.deriAdedi?.deger || 0,
-        toplamYuzeyFt2: v.toplamYuzeyFt2?.deger || 0, toplamYuzeyDm2: v.toplamYuzeyDm2?.deger || 0,
+        toplamYuzeyFt2: ceyrekYuvarla(v.toplamYuzeyFt2?.deger || 0), toplamYuzeyDm2: dm2Yuvarla(v.toplamYuzeyDm2?.deger || 0),
         birim: v.birim || 'dm2', yuzeyOlcumleri: v.yuzeyDegerleri || [],
         okumaGuveni: v.genelGuven || 0, kaynak: f.kaynak || 'bilinmiyor',
         foto
@@ -3301,7 +3303,7 @@ function basariDialog(s) {
         <div style="font-size:48px;color:var(--green);margin-bottom:12px">✓</div>
         <h2>Sevkiyat Kaydedildi</h2>
         <div class="mono text-muted mt-2">${s.sevkiyatNo}</div>
-        <div class="text-muted mt-2">${s.toplamAdet} deri • <b>${(s.toplamYuzeyDm2||s.toplamYuzey||0).toFixed(0)} dm²</b> · ${(s.toplamYuzeyFt2||0).toFixed(2)} ft²</div>
+        <div class="text-muted mt-2">${s.toplamAdet} deri • <b>${birimDeger(s.toplamYuzeyDm2||s.toplamYuzey, s.toplamYuzeyFt2, s).deger} ${birimDeger(s.toplamYuzeyDm2||s.toplamYuzey, s.toplamYuzeyFt2, s).etiket}</b></div>
       </div>
       <button class="btn gold mt-3" onclick="pdfUret('${s.fsId}', 'A4')">A4 PDF İrsaliye</button>
       <button class="btn secondary mt-2" onclick="pdfUret('${s.fsId}', 'A5')">A5 PDF İrsaliye</button>
@@ -3537,8 +3539,7 @@ function ekranSevkiyatListesi() {
       <div class="totals">
         <span>📦 ${(s.deriler||[]).length} paket</span>
         <span>🐂 ${s.toplamAdet} deri</span>
-        <span>📐 ${sayiFormatla(s.toplamYuzeyDm2 || s.toplamYuzey || 0)} dm²</span>
-        <span style="color:var(--ink-faint)">${(s.toplamYuzeyFt2 || 0).toFixed(2)} ft²</span>
+        <span>📐 ${birimDeger(s.toplamYuzeyDm2 || s.toplamYuzey || 0, s.toplamYuzeyFt2 || 0, s).deger} ${birimDeger(s.toplamYuzeyDm2 || s.toplamYuzey || 0, s.toplamYuzeyFt2 || 0, s).etiket}</span>
       </div>
     </div>`; }).join('');
 
@@ -3701,9 +3702,8 @@ function ekranSevkiyatDetay() {
           <div class="item"><div class="value">${(s.deriler||[]).length}</div><div class="label">Paket</div></div>
           <div class="item"><div class="value">${s.toplamAdet}</div><div class="label">Deri</div></div>
           <div class="item">
-            <div class="value">${sayiFormatla(dm2Top)}</div>
-            <div class="label">dm²</div>
-            <div style="font-size:10px;opacity:0.7">${ft2Top.toFixed(2)} ft²</div>
+            <div class="value">${birimDeger(dm2Top, ft2Top, s).deger}</div>
+            <div class="label">${birimDeger(dm2Top, ft2Top, s).etiket}</div>
           </div>
         </div>
         ${ecoGruplar.length > 0 ? `
@@ -3759,7 +3759,7 @@ function ekranSevkiyatDetay() {
             <span style="width:22px;color:${kg?'var(--red)':'var(--ink-faint)'};font-weight:700">${kg?'⚠':''}${i+1}</span>
             <span style="flex:1;min-width:0" onclick="sevkiyatDeriDuzenle('${s.fsId}',${i})">${escapeHtml(d.cins||'?')} · ${escapeHtml(d.renk||'?')} · ${escapeHtml(d.kalite||'?')}</span>
             <span class="mono">${d.deriAdedi||0}ad</span>
-            <span class="mono" style="font-weight:700">${sayiFormatla(d.toplamYuzeyDm2||0)}</span>
+            <span class="mono" style="font-weight:700">${birimDeger(d.toplamYuzeyDm2, d.toplamYuzeyFt2, s).deger}</span>
             ${varFoto ? `<span onclick="paketFotoGoster('${s.fsId}',${i})" style="cursor:pointer;font-size:16px">📷</span>` : ''}
             <span onclick="sevkiyatDeriDuzenle('${s.fsId}',${i})" style="cursor:pointer;font-size:15px">✏️</span>
             <span onclick="sevkiyatDeriSil('${s.fsId}',${i})" style="cursor:pointer;font-size:15px">🗑</span>
@@ -3805,8 +3805,8 @@ function sevkiyatDeriDuzenle(fsId, i) {
         <div class="input-group grow"><label class="input-label">Deri Adedi</label><input class="input mono" id="sd-adet" type="number" value="${d.deriAdedi||''}"></div>
       </div>
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('sd-dm2','sd-ft2')" value="${d.toplamYuzeyDm2?Math.round(d.toplamYuzeyDm2):''}"></div>
-        <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" id="sd-ft2" type="number" step="0.25" value="${d.toplamYuzeyFt2?d.toplamYuzeyFt2.toFixed(2):''}"></div>
+        <div class="input-group grow" ${aktifBirim(s) === 'ft2' ? 'style="display:none"' : ''}><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('sd-dm2','sd-ft2')" value="${d.toplamYuzeyDm2?Math.round(d.toplamYuzeyDm2):''}"></div>
+        <div class="input-group grow" ${aktifBirim(s) === 'dm2' ? 'style="display:none"' : ''}><label class="input-label">Toplam ft²</label><input class="input mono" id="sd-ft2" type="number" step="0.25" value="${d.toplamYuzeyFt2?d.toplamYuzeyFt2.toFixed(2):''}"></div>
       </div>
       <div class="flex gap-2 mt-4">
         <button class="btn secondary" onclick="document.querySelector('.modal-bg').remove()">İptal</button>
