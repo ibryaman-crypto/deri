@@ -1849,8 +1849,8 @@ async function urunKoduDialog(baslik, mod) {
       <input class="input mono" id="uk-kod" placeholder="Ürün Kodu (örn. 4160 200)" oninput="urunKoduBilgiGoster()" ${atts}
         ${enterGec("document.getElementById('uk-cins').focus()")} style="font-size:18px;font-weight:700">
       <div class="flex gap-2" style="margin-top:8px">
-        <input class="input" id="uk-cins" placeholder="Cins" ${atts} ${enterGec("document.getElementById('uk-renk').focus()")} style="flex:1">
-        <input class="input" id="uk-renk" placeholder="Renk" ${atts} ${enterGec("urunKoduSecim('devam')")} style="flex:1">
+        <input class="input" id="uk-cins" placeholder="Cins" ${atts} oninput="this.dataset.elle=1" ${enterGec("document.getElementById('uk-renk').focus()")} style="flex:1">
+        <input class="input" id="uk-renk" placeholder="Renk" ${atts} oninput="this.dataset.elle=1" ${enterGec("urunKoduSecim('devam')")} style="flex:1">
       </div>
       <div class="flex gap-2" style="margin-top:10px">
         <button class="btn secondary" onclick="urunKoduSecim('otomatik')" style="flex:1">📷 Otomatik Okuma</button>
@@ -1890,13 +1890,16 @@ function urunKoduBilgiGoster() {
   const kod = kodNormalize(document.getElementById('uk-kod').value);
   const prev = document.getElementById('uk-onizle');
   const bilgi = state._kodHarita?.[kod];
+  const ci = document.getElementById('uk-cins'), ri = document.getElementById('uk-renk');
   if (kod && bilgi && (bilgi.cins || bilgi.renk)) {
     prev.innerHTML = `<span style="color:var(--green);font-weight:700">✓ Bilinen kod:</span> ${escapeHtml(bilgi.cins||'')} · ${escapeHtml(bilgi.renk||'')}`;
-    const ci = document.getElementById('uk-cins'), ri = document.getElementById('uk-renk');
-    if (ci && !ci.value) ci.value = bilgi.cins || '';
-    if (ri && !ri.value) ri.value = bilgi.renk || '';
+    // Kullanıcı elle yazmadıysa otomatik doldur (önceki otomatik değeri de günceller)
+    if (ci && !ci.dataset.elle) ci.value = bilgi.cins || '';
+    if (ri && !ri.dataset.elle) ri.value = bilgi.renk || '';
   } else if (kod) {
     prev.innerHTML = `<span style="color:var(--amber)">Yeni kod</span> — cins/renk girerseniz öğrenilir`;
+    if (ci && !ci.dataset.elle) ci.value = '';
+    if (ri && !ri.dataset.elle) ri.value = '';
   } else {
     prev.textContent = '';
   }
@@ -2499,6 +2502,18 @@ function incelemeyeGec() {
   ekranGit('inceleme');
 }
 
+// ft² değerini en yakın çeyreğe yuvarla (0 / 0.25 / 0.50 / 0.75)
+function ceyrekYuvarla(n) { return Math.round((Number(n) || 0) * 4) / 4; }
+
+// dm² girilince ft²'yi otomatik hesapla ve çeyreğe yuvarla
+function ft2Hesapla(dmId, ftId) {
+  const dm = parseFloat(document.getElementById(dmId)?.value) || 0;
+  const ftEl = document.getElementById(ftId);
+  if (!ftEl) return;
+  if (dm > 0) ftEl.value = ceyrekYuvarla(dm / 9.2903).toFixed(2);
+  else ftEl.value = '';
+}
+
 // ====== EKRAN: FİŞ DÜZELT ======
 function fisDuzelt(idx) {
   const fis = state.aktifFisler[idx];
@@ -2591,8 +2606,8 @@ function fisDuzeltModal(fis) {
 
       <!-- TOPLAM YÜZEY -->
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="0.1" value="${v.toplamYuzeyDm2?.deger ? v.toplamYuzeyDm2.deger.toFixed(1) : ''}"></div>
-        <div class="input-group grow"><label class="input-label">Toplam ft²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamft" type="number" step="0.01" value="${v.toplamYuzeyFt2?.deger ? v.toplamYuzeyFt2.deger.toFixed(2) : ''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="0.1" oninput="ft2Hesapla('d-toplamdm','d-toplamft')" value="${v.toplamYuzeyDm2?.deger ? v.toplamYuzeyDm2.deger.toFixed(1) : ''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamft" type="number" step="0.25" value="${v.toplamYuzeyFt2?.deger ? v.toplamYuzeyFt2.deger.toFixed(2) : ''}"></div>
       </div>
 
       ${fis.hamMetin ? `<details class="mt-3"><summary style="cursor:pointer;font-size:12px;color:var(--ink-faint)">OCR ham çıktısı</summary><pre style="font-size:11px;overflow:auto;max-height:120px;margin-top:6px;background:var(--ink);color:#d6c8a8;padding:8px;border-radius:6px">${escapeHtml(fis.hamMetin)}</pre></details>` : ''}
@@ -2697,7 +2712,8 @@ async function fisOnayla(idx) {
   const dm2Val = parseFloat(document.getElementById('d-toplamdm')?.value) || 0;
   const ft2Val = parseFloat(document.getElementById('d-toplamft')?.value) || 0;
   v.toplamYuzeyDm2.deger = dm2Val || (ft2Val ? parseFloat((ft2Val * 9.2903).toFixed(1)) : 0);
-  v.toplamYuzeyFt2.deger = ft2Val || (dm2Val ? parseFloat((dm2Val / 9.2903).toFixed(2)) : 0);
+  // ft²: girilmişse çeyreğe yuvarla, girilmemişse dm²'den hesapla (çeyrek)
+  v.toplamYuzeyFt2.deger = ft2Val ? ceyrekYuvarla(ft2Val) : (dm2Val ? ceyrekYuvarla(dm2Val / 9.2903) : 0);
   v.yuzeyDegerleri = [];
 
   // Basit doğrulama — eksik alan uyarısı (kayıt engellenmez)
@@ -3362,13 +3378,14 @@ function gecmisAraligiDegistir(gun) {
 }
 
 function ekranSevkiyatListesi() {
+  // Ekran açıldığında veri yoksa bir kez otomatik yükle
+  if (!state._gecmisYuklendi) { state._gecmisYuklendi = true; setTimeout(() => gecmisYenile(true), 50); }
   const gun = gecmisAraligiGun();
   const simdi = Date.now();
   const sinir = simdi - gun * 24 * 60 * 60 * 1000;
+  const tumu = (state.sevkiyatlar || []).slice().sort((a, b) => (b.tarih||0) - (a.tarih||0));
   // Onaylanmış sevkiyatlar dahil — seçili zaman aralığındaki tüm sevkiyatlar
-  const sevk = state.sevkiyatlar
-    .filter(s => (s.tarih || 0) >= sinir)
-    .sort((a, b) => b.tarih - a.tarih);
+  const sevk = tumu.filter(s => (s.tarih || 0) >= sinir);
 
   const araBar = `
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
@@ -3410,7 +3427,13 @@ function ekranSevkiyatListesi() {
     </div>
     <div class="content" style="${secModu ? 'padding-bottom:80px' : ''}">
       ${secModu ? '<div style="background:var(--gold-soft,#fef6e4);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">Aynı müşteriye giden 2+ sevkiyat seçin — tek irsaliyede birleşecek.</div>' : araBar}
-      ${sevk.length === 0 ? `<div class="empty"><div class="icon">⎙</div><div>Bu aralıkta sevkiyat yok</div></div>` : `<div class="section-title">${sevk.length} sevkiyat</div>${liste}`}
+      ${state._gecmisHata ? `<div style="background:rgba(220,38,38,0.1);border:1px solid var(--red);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--red)">⚠ Yükleme hatası: ${escapeHtml(state._gecmisHata)}</div>` : ''}
+      ${sevk.length === 0
+        ? `<div class="empty"><div class="icon">⎙</div>
+             <div>${tumu.length > 0 ? `Bu aralıkta sevkiyat yok — toplam ${tumu.length} kayıt var, daha uzun aralık seçin` : 'Sevkiyat bulunamadı'}</div>
+             <button class="btn secondary btn-small" style="margin-top:12px" onclick="gecmisYenile()">🔄 Yeniden Yükle</button>
+           </div>`
+        : `<div class="section-title">${sevk.length} sevkiyat</div>${liste}`}
     </div>
     ${secModu && secili.size >= 2 ? `<div class="bottom-bar"><button class="btn gold" onclick="gecmisBirlestirBaslat()">🔗 ${secili.size} Sevkiyatı Birleştir</button></div>` : ''}`;
 }
@@ -3659,8 +3682,8 @@ function sevkiyatDeriDuzenle(fsId, i) {
         <div class="input-group grow"><label class="input-label">Deri Adedi</label><input class="input mono" id="sd-adet" type="number" value="${d.deriAdedi||''}"></div>
       </div>
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="0.1" value="${d.toplamYuzeyDm2?d.toplamYuzeyDm2.toFixed(1):''}"></div>
-        <div class="input-group grow"><label class="input-label">Toplam ft²</label><input class="input mono" id="sd-ft2" type="number" step="0.01" value="${d.toplamYuzeyFt2?d.toplamYuzeyFt2.toFixed(2):''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="0.1" oninput="ft2Hesapla('sd-dm2','sd-ft2')" value="${d.toplamYuzeyDm2?d.toplamYuzeyDm2.toFixed(1):''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" id="sd-ft2" type="number" step="0.25" value="${d.toplamYuzeyFt2?d.toplamYuzeyFt2.toFixed(2):''}"></div>
       </div>
       <div class="flex gap-2 mt-4">
         <button class="btn secondary" onclick="document.querySelector('.modal-bg').remove()">İptal</button>
@@ -3676,7 +3699,7 @@ async function sevkiyatDeriKaydet(fsId, i) {
   if (!s?.deriler?.[i]) { toast('Paket bulunamadı'); return; }
   const dm2 = parseFloat(document.getElementById('sd-dm2').value) || 0;
   let ft2 = parseFloat(document.getElementById('sd-ft2').value) || 0;
-  if (!ft2 && dm2) ft2 = parseFloat((dm2/9.2903).toFixed(2));
+  ft2 = ft2 ? ceyrekYuvarla(ft2) : (dm2 ? ceyrekYuvarla(dm2 / 9.2903) : 0);
   const yeniDeriler = s.deriler.map((x,ix) => ix===i ? {
     ...x,
     cins: document.getElementById('sd-cins').value.trim(),
@@ -4361,6 +4384,8 @@ function yoneticiDinlemeBaslat() {
       }
       // Veri geldikten sonra kota temizliğini bir kez çalıştır
       if (!state._kotaKontrolEdildi) { state._kotaKontrolEdildi = true; eskiFotograflariTemizle(); }
+      // Geçmiş sevkiyatlardaki kodları öğren (bir kez)
+      if (!state._kodOgrenildi) { state._kodOgrenildi = true; gecmistenKodOgren(); }
       if (state.ekran === 'yonetici' || state.ekran === 'sevkiyat-detay') render();
     }, e => console.warn('Snapshot:', e.message));
 }
@@ -4478,11 +4503,12 @@ async function personelSevkiyatYukle() {
   const uid = state.kullanici?.uid;
   if (!uid) return;
   const harita = {};
+  const hatalar = [];
   // 1) Kendi sevkiyatları
   try {
     const snap = await db.collection('sevkiyatlar').where('personelId', '==', uid).limit(200).get();
     snap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
-  } catch(e) { console.warn('Kendi sevkiyatları:', e.message); }
+  } catch(e) { console.warn('Kendi sevkiyatları:', e.message); hatalar.push(e.message); }
   // 2) Bugünün TÜM sevkiyatları (saat 21:00'e kadar)
   try {
     const simdi = new Date();
@@ -4492,16 +4518,48 @@ async function personelSevkiyatYukle() {
       const gSnap = await db.collection('sevkiyatlar').where('tarih', '>=', bugun0).limit(300).get();
       gSnap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
     }
-  } catch(e2) { console.warn('Bugünkü sevkiyatlar:', e2.message); }
+  } catch(e2) { console.warn('Bugünkü sevkiyatlar:', e2.message); hatalar.push(e2.message); }
+  // 3) Hiçbir sorgu sonuç vermediyse son çare: filtresiz son kayıtlar
+  if (Object.keys(harita).length === 0) {
+    try {
+      const aSnap = await db.collection('sevkiyatlar').orderBy('tarih', 'desc').limit(200).get();
+      aSnap.docs.forEach(d => { harita[d.id] = { ...d.data(), fsId: d.id }; });
+    } catch(e3) { console.warn('Genel sevkiyat sorgusu:', e3.message); hatalar.push(e3.message); }
+  }
   // Yerelde kaydettiklerimizi de koru (silinmediyse)
   (state.sevkiyatlar || []).forEach(s => { if (s.fsId && !harita[s.fsId]) harita[s.fsId] = s; });
   state.sevkiyatlar = Object.values(harita).sort((a,b) => (b.tarih||0) - (a.tarih||0));
+  state._gecmisHata = (Object.keys(harita).length === 0 && hatalar.length) ? hatalar[0] : null;
+  // Geçmişteki kodları öğrenme listesine ekle
+  try { await gecmistenKodOgren(); } catch(e) {}
 }
 
-async function gecmisYenile() {
-  toast('🔄 Yenileniyor...', 1500);
+async function gecmisYenile(sessiz) {
+  if (!sessiz) toast('🔄 Yenileniyor...', 1500);
   await personelSevkiyatYukle();
   render();
+}
+
+// Kayıtlı sevkiyatlardaki kod → cins/renk eşlemelerini öğrenme listesine aktar
+async function gecmistenKodOgren() {
+  const kaynak = (state.yoneticiSevkiyatlar || []).concat(state.sevkiyatlar || []);
+  if (!kaynak.length) return;
+  const harita = await Storage.get('app:kod_bilgisi') || {};
+  let degisti = false;
+  kaynak.forEach(s => (s.deriler || []).forEach(d => {
+    const kod = kodNormalize(d.kod);
+    if (!kod || kod === '?') return;
+    const cins = (d.cins || '').toUpperCase().trim();
+    const renk = (d.renk || '').toUpperCase().trim();
+    if (!cins && !renk) return;
+    const mevcut = harita[kod];
+    if (!mevcut) { harita[kod] = { cins, renk, sayim: 1 }; degisti = true; }
+    else if ((!mevcut.cins && cins) || (!mevcut.renk && renk)) {
+      harita[kod] = { cins: mevcut.cins || cins, renk: mevcut.renk || renk, sayim: (mevcut.sayim || 1) + 1 };
+      degisti = true;
+    }
+  }));
+  if (degisti) await Storage.set('app:kod_bilgisi', harita);
 }
 
 // ====== UYGULAMA BAŞLATMA — AUTH STATE ======
