@@ -416,9 +416,25 @@ function kullaniciAdiGoster(email) {
 // ====== PWA: uygulama olarak kurulabilir yap (standalone) ======
 (function pwaKur() {
   try {
-    // Service worker (çevrimdışı açılış) — service-worker.js dosyası yüklüyse kaydolur
+    // Service worker — güncellemeleri otomatik alır
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => { navigator.serviceWorker.register('service-worker.js').catch(() => {}); });
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js').then(reg => {
+          reg.update(); // her açılışta yeni sürüm var mı bak
+          // Uygulama öne geldiğinde de kontrol et
+          document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update(); });
+          reg.addEventListener('updatefound', () => {
+            const yeni = reg.installing;
+            if (!yeni) return;
+            yeni.addEventListener('statechange', () => {
+              if (yeni.state === 'installed' && navigator.serviceWorker.controller) {
+                toast('🔄 Yeni sürüm yüklendi, yenileniyor...', 2000);
+                setTimeout(() => location.reload(), 1200);
+              }
+            });
+          });
+        }).catch(() => {});
+      });
     }
     window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window._pwaPrompt = e; });
     // Statik manifest.json barındırılmıyorsa (tek dosya kullanımı) çalışma-zamanı manifest üret
