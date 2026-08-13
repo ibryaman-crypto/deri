@@ -1825,12 +1825,17 @@ async function musteriSec(id) {
   // Sevkiyat numarası kayıt anında üretilir — boş/atlanan numara oluşmasın
   state.oturumNo = null;
   state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = '';
-  // Ürün kodu her kamera tuşuna basıldığında sorulur — burada direkt çekim ekranına git
+  state._otomatikMod = false; state._otomatikOnaylandi = false;
+  // Kod, ilk kamera tuşuna basıldığında bir kez sorulur
   ekranGit('toplu-cekim');
 }
 
-// Kamera tuşuna basınca: önce ürün kodu ekranı, sonra kamera
-function kameraKoduSor() { urunKoduDialog('Ürün Kodu', 'kamera'); }
+// Kamera tuşuna basınca: kod/otomatik mod zaten seçiliyse direkt kamerayı aç,
+// seçilmemişse (oturumun ilk çekimi) bir kez ürün kodu ekranını göster.
+function kameraKoduSor() {
+  if (state.aktifKod || state._otomatikMod) { kameraAc(); return; }
+  urunKoduDialog('Ürün Kodu', 'kamera');
+}
 
 // ====== ÜRÜN KODU SORMA ======
 // mod: 'kamera' → seçimden sonra kamerayı aç; aksi halde toplu-cekim ekranına git
@@ -1869,9 +1874,11 @@ async function urunKoduSecim(tip) {
   const cins = (document.getElementById('uk-cins')?.value || '').trim().toUpperCase();
   const renk = (document.getElementById('uk-renk')?.value || '').trim().toUpperCase();
   if (tip === 'otomatik') {
-    // Otomatik okuma — kod zorlanmaz, OCR her şeyi okur
+    // Otomatik okuma — ilk fişten kod/cins/renk tespit edilip onaya sunulur
     state.aktifKod = null; state.aktifKodCins = ''; state.aktifKodRenk = '';
+    state._otomatikMod = true; state._otomatikOnaylandi = false;
   } else {
+    state._otomatikMod = false;
     // "Devam": kod girildiyse onu kullan, girilmediyse önceki koddan devam et
     if (kodInput) {
       state.aktifKod = kodInput;
@@ -2003,7 +2010,10 @@ function ekranTopluCekim() {
     </div>
     <div class="customer-bar">
       <div><div class="label">Müşteri</div><div class="name">${m.ad}</div></div>
-      ${state.aktifKod ? `<div style="text-align:right"><div class="label">Ürün Kodu</div><div class="name mono" style="font-size:14px">${escapeHtml(state.aktifKod)}</div></div>` : '<div class="lock">🔒 Kilitli</div>'}
+      <div onclick="urunKoduDialog('Ürün Kodu Değiştir')" style="text-align:right;cursor:pointer">
+        <div class="label">${state.aktifKod ? 'Ürün Kodu ✏️' : (state._otomatikMod ? 'Mod ✏️' : 'Kod ✏️')}</div>
+        <div class="name mono" style="font-size:14px">${state.aktifKod ? escapeHtml(state.aktifKod) : (state._otomatikMod ? 'Otomatik' : 'Seç')}</div>
+      </div>
     </div>
     <div class="stats-strip">
       <div class="stat"><div class="value">${ist.toplam}</div><div class="label">Toplam</div></div>
@@ -2442,6 +2452,57 @@ function mukerrerKontrol(fis) {
   }
 }
 
+// Otomatik modda ilk fişten tespit edilen kod/cins/renk için onay ekranı
+function otomatikTespitOnay(kod, cins, renk) {
+  const atts = 'autocomplete="off" autocapitalize="characters" spellcheck="false" data-lpignore="true"';
+  const mbg = document.createElement('div');
+  mbg.className = 'modal-bg';
+  mbg.style.alignItems = 'flex-start';
+  mbg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="margin-top:12px;border-radius:16px;padding:14px 16px 18px">
+      <div style="font-weight:800;font-size:16px;margin-bottom:4px">📷 Otomatik Tespit</div>
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px">İlk fişten okunanlar — onaylarsanız sonraki tüm fişler bu bilgilerle yazılır (ECO kaliteler yine ayrı gruplanır).</div>
+      <input class="input mono" id="ot-kod" value="${escapeHtml(kod||'')}" placeholder="Kod" ${atts} style="font-size:18px;font-weight:700">
+      <div class="flex gap-2" style="margin-top:8px">
+        <input class="input" id="ot-cins" value="${escapeHtml(cins||'')}" placeholder="Cins" ${atts} style="flex:1">
+        <input class="input" id="ot-renk" value="${escapeHtml(renk||'')}" placeholder="Renk" ${atts} style="flex:1">
+      </div>
+      <div class="flex gap-2" style="margin-top:10px">
+        <button class="btn secondary" style="flex:1" onclick="otomatikTespitRed()">Her Fişi Ayrı Oku</button>
+        <button class="btn gold" style="flex:2" onclick="otomatikTespitKabul()">✓ Onayla ve Devam</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mbg);
+}
+
+async function otomatikTespitKabul() {
+  const kod = kodNormalize(document.getElementById('ot-kod')?.value || '');
+  const cins = (document.getElementById('ot-cins')?.value || '').trim().toUpperCase();
+  const renk = (document.getElementById('ot-renk')?.value || '').trim().toUpperCase();
+  document.querySelector('.modal-bg')?.remove();
+  if (!kod && !cins && !renk) { toast('Bilgi girilmedi — her fiş ayrı okunacak'); return; }
+  state.aktifKod = kod || null;
+  state.aktifKodCins = cins; state.aktifKodRenk = renk;
+  state._otomatikMod = false; // artık elle girilmiş gibi davran
+  if (kod && (cins || renk)) { try { await ogrenilenleriKaydet(cins, kod, renk); } catch(e) {} }
+  // Zaten okunmuş fişlere de uygula (kalite/ECO dokunulmaz)
+  state.aktifFisler.forEach(f => {
+    if (!f.veri) return;
+    if (kod) { f.veri.kod.deger = kod; f.veri.kod.guven = 0.99; }
+    if (cins) { f.veri.cins.deger = cins; f.veri.cins.guven = 0.99; }
+    if (renk) { f.veri.renk.deger = renk; f.veri.renk.guven = 0.99; }
+    f.veri.genelGuven = veriGuveniHesapla(f.veri);
+  });
+  toast(`✓ ${kod || cins} onaylandı — sonraki fişler bu bilgilerle`);
+  render();
+}
+
+function otomatikTespitRed() {
+  document.querySelector('.modal-bg')?.remove();
+  state._otomatikMod = false; // her fiş kendi okunsun
+  toast('Her fiş ayrı okunacak');
+}
+
 async function islemKuyruguIsle() {
   if (kuyrukAktif) return;
   const bekleyen = state.aktifFisler.find(f => f.durum === 'beklemede');
@@ -2459,6 +2520,16 @@ async function islemKuyruguIsle() {
       if (state.aktifKodCins) { sonuc.veri.cins.deger = state.aktifKodCins; sonuc.veri.cins.guven = 0.99; }
       if (state.aktifKodRenk) { sonuc.veri.renk.deger = state.aktifKodRenk; sonuc.veri.renk.guven = 0.99; }
       sonuc.veri.genelGuven = veriGuveniHesapla(sonuc.veri);
+    }
+    // Otomatik mod: ilk okunan fişten kod/cins/renk tespit et, kullanıcıya onaylat
+    if (state._otomatikMod && !state._otomatikOnaylandi && !state.aktifKod) {
+      const tk = kodNormalize(sonuc.veri.kod?.deger);
+      const tc = (sonuc.veri.cins?.deger || '').toUpperCase().trim();
+      const tr = (sonuc.veri.renk?.deger || '').toUpperCase().trim();
+      if (tk || tc || tr) {
+        state._otomatikOnaylandi = true; // tekrar sorma
+        setTimeout(() => otomatikTespitOnay(tk, tc, tr), 300);
+      }
     }
     bekleyen.veri = sonuc.veri;
     bekleyen.hamMetin = sonuc.hamMetin;
@@ -4630,7 +4701,12 @@ async function basla() {
       if (kayitli.ekranGecmisi) state.ekranGecmisi = kayitli.ekranGecmisi;
       // Giriş/ilk-kurulum hariç kayıtlı ekrana dön
       const guvenliEkranlar = ['musteri-listesi','toplu-cekim','inceleme','sevkiyat-listesi','sevkiyat-detay','yonetici'];
-      if (kayitli.ekran && guvenliEkranlar.includes(kayitli.ekran)) {
+      // Yönetici: yarım kalmış çekim yoksa her zaman yönetici paneliyle açılsın
+      const yarimIs = (state.aktifFisler?.length > 0);
+      if (profil.rol === 'YONETICI' && !yarimIs) {
+        state.ekran = 'yonetici';
+        state.ekranGecmisi = [];
+      } else if (kayitli.ekran && guvenliEkranlar.includes(kayitli.ekran)) {
         state.ekran = kayitli.ekran;
       }
     }
