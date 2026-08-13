@@ -413,6 +413,14 @@ function kullaniciAdiGoster(email) {
   return email.replace(/@deri\.app$/i, '').replace(/@.*$/, '');
 }
 
+// Bir alana dokunulduğunda içeriğin tamamı seçili gelsin — silmekle uğraşmadan yaz
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (!el || el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
+  if (el.type === 'checkbox' || el.type === 'radio' || el.type === 'file') return;
+  setTimeout(() => { try { el.select(); } catch(err) {} }, 0);
+});
+
 // ====== PWA: uygulama olarak kurulabilir yap (standalone) ======
 (function pwaKur() {
   try {
@@ -656,6 +664,9 @@ function claudeJsonToInternal(json) {
     dogrulamaUyarilari: [],
     genelGuven: 0.95
   };
+  // dm² değerleri her zaman tam sayı (etiketlerde küsürat olmaz)
+  if (veri.toplamYuzeyDm2?.deger) veri.toplamYuzeyDm2.deger = Math.round(veri.toplamYuzeyDm2.deger);
+  if (veri.ortalamaAlanDm2?.deger) veri.ortalamaAlanDm2.deger = Math.round(veri.ortalamaAlanDm2.deger);
   // Gerçek güven = zorunlu alanların doluluk oranı (Haiku→Sonnet yükseltme kararı buna dayanır)
   veri.genelGuven = veriGuveniHesapla(veri);
   return veri;
@@ -1319,6 +1330,8 @@ function bosVeri() {
 
 // ====== RENDER ======
 function render() {
+  // Canlı kamera açıkken arka planı yeniden çizme — çekim akışı bozulmasın
+  if (document.querySelector('.kamera-modal')) { kameraSayacGuncelle(); return; }
   const app = document.getElementById('app');
   switch (state.ekran) {
     case 'giris':            app.innerHTML = ekranGiris(); break;
@@ -2471,9 +2484,11 @@ function mukerrerKontrol(fis) {
 // Otomatik modda ilk fişten tespit edilen kod/cins/renk için onay ekranı
 function otomatikTespitOnay(kod, cins, renk) {
   const atts = 'autocomplete="off" autocapitalize="characters" spellcheck="false" data-lpignore="true"';
+  state._onayKameraAcikti = !!document.querySelector('.kamera-modal');
   const mbg = document.createElement('div');
-  mbg.className = 'modal-bg';
+  mbg.className = 'modal-bg otomatik-onay';
   mbg.style.alignItems = 'flex-start';
+  mbg.style.zIndex = '10050'; // kamera ekranının ÜSTÜNDE göster
   mbg.innerHTML = `
     <div class="modal" onclick="event.stopPropagation()" style="margin-top:12px;border-radius:16px;padding:14px 16px 18px">
       <div style="font-weight:800;font-size:16px;margin-bottom:4px">📷 Otomatik Tespit</div>
@@ -2495,7 +2510,7 @@ async function otomatikTespitKabul() {
   const kod = kodNormalize(document.getElementById('ot-kod')?.value || '');
   const cins = (document.getElementById('ot-cins')?.value || '').trim().toUpperCase();
   const renk = (document.getElementById('ot-renk')?.value || '').trim().toUpperCase();
-  document.querySelector('.modal-bg')?.remove();
+  document.querySelector('.otomatik-onay')?.remove();
   if (!kod && !cins && !renk) { toast('Bilgi girilmedi — her fiş ayrı okunacak'); return; }
   state.aktifKod = kod || null;
   state.aktifKodCins = cins; state.aktifKodRenk = renk;
@@ -2510,13 +2525,31 @@ async function otomatikTespitKabul() {
     f.veri.genelGuven = veriGuveniHesapla(f.veri);
   });
   toast(`✓ ${kod || cins} onaylandı — sonraki fişler bu bilgilerle`);
-  render();
+  onaySonrasiKamera();
 }
 
 function otomatikTespitRed() {
-  document.querySelector('.modal-bg')?.remove();
+  document.querySelector('.otomatik-onay')?.remove();
   state._otomatikMod = false; // her fiş kendi okunsun
   toast('Her fiş ayrı okunacak');
+  onaySonrasiKamera();
+}
+
+// Onay ekranından sonra çekime kesintisiz devam: kamera açıksa dokunma,
+// kapanmışsa (bazı cihazlarda olabiliyor) otomatik yeniden aç.
+function onaySonrasiKamera() {
+  if (document.querySelector('.kamera-modal')) { kameraSayacGuncelle(); return; }
+  if (state._onayKameraAcikti && state.ekran === 'toplu-cekim') {
+    state._onayKameraAcikti = false;
+    setTimeout(() => kameraAc(), 250);
+    return;
+  }
+  render();
+}
+
+function kameraSayacGuncelle() {
+  const sayac = document.getElementById('kamera-sayac');
+  if (sayac) sayac.innerHTML = `${state.aktifFisler.length}<span style="font-size:15px;font-weight:700;display:block;margin-top:-4px">fiş</span>`;
 }
 
 async function islemKuyruguIsle() {
@@ -2592,9 +2625,12 @@ function incelemeyeGec() {
 // ft² değerini en yakın çeyreğe yuvarla (0 / 0.25 / 0.50 / 0.75)
 function ceyrekYuvarla(n) { return Math.round((Number(n) || 0) * 4) / 4; }
 
+// dm² her zaman TAM SAYI olur (küsürat yok)
+function dm2Yuvarla(n) { return Math.round(Number(n) || 0); }
+
 // dm² girilince ft²'yi otomatik hesapla ve çeyreğe yuvarla
 function ft2Hesapla(dmId, ftId) {
-  const dm = parseFloat(document.getElementById(dmId)?.value) || 0;
+  const dm = dm2Yuvarla(document.getElementById(dmId)?.value);
   const ftEl = document.getElementById(ftId);
   if (!ftEl) return;
   if (dm > 0) ftEl.value = ceyrekYuvarla(dm / 9.2903).toFixed(2);
@@ -2693,7 +2729,7 @@ function fisDuzeltModal(fis) {
 
       <!-- TOPLAM YÜZEY -->
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="0.1" oninput="ft2Hesapla('d-toplamdm','d-toplamft')" value="${v.toplamYuzeyDm2?.deger ? v.toplamYuzeyDm2.deger.toFixed(1) : ''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamdm" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('d-toplamdm','d-toplamft')" value="${v.toplamYuzeyDm2?.deger ? Math.round(v.toplamYuzeyDm2.deger) : ''}"></div>
         <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" style="${eks(yuzeyDolu)}" id="d-toplamft" type="number" step="0.25" value="${v.toplamYuzeyFt2?.deger ? v.toplamYuzeyFt2.deger.toFixed(2) : ''}"></div>
       </div>
 
@@ -2796,9 +2832,9 @@ async function fisOnayla(idx) {
   v.seriNo.deger = document.getElementById('d-seri').value.trim();
 
   // Toplam yüzeyleri inputlardan al
-  const dm2Val = parseFloat(document.getElementById('d-toplamdm')?.value) || 0;
+  const dm2Val = dm2Yuvarla(document.getElementById('d-toplamdm')?.value);
   const ft2Val = parseFloat(document.getElementById('d-toplamft')?.value) || 0;
-  v.toplamYuzeyDm2.deger = dm2Val || (ft2Val ? parseFloat((ft2Val * 9.2903).toFixed(1)) : 0);
+  v.toplamYuzeyDm2.deger = dm2Val || (ft2Val ? dm2Yuvarla(ft2Val * 9.2903) : 0);
   // ft²: girilmişse çeyreğe yuvarla, girilmemişse dm²'den hesapla (çeyrek)
   v.toplamYuzeyFt2.deger = ft2Val ? ceyrekYuvarla(ft2Val) : (dm2Val ? ceyrekYuvarla(dm2Val / 9.2903) : 0);
   v.yuzeyDegerleri = [];
@@ -3769,7 +3805,7 @@ function sevkiyatDeriDuzenle(fsId, i) {
         <div class="input-group grow"><label class="input-label">Deri Adedi</label><input class="input mono" id="sd-adet" type="number" value="${d.deriAdedi||''}"></div>
       </div>
       <div class="flex gap-2">
-        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="0.1" oninput="ft2Hesapla('sd-dm2','sd-ft2')" value="${d.toplamYuzeyDm2?d.toplamYuzeyDm2.toFixed(1):''}"></div>
+        <div class="input-group grow"><label class="input-label">Toplam dm²</label><input class="input mono" id="sd-dm2" type="number" step="1" inputmode="numeric" oninput="ft2Hesapla('sd-dm2','sd-ft2')" value="${d.toplamYuzeyDm2?Math.round(d.toplamYuzeyDm2):''}"></div>
         <div class="input-group grow"><label class="input-label">Toplam ft² <span style="font-size:10px;color:var(--ink-faint)">(otomatik)</span></label><input class="input mono" id="sd-ft2" type="number" step="0.25" value="${d.toplamYuzeyFt2?d.toplamYuzeyFt2.toFixed(2):''}"></div>
       </div>
       <div class="flex gap-2 mt-4">
@@ -3784,7 +3820,7 @@ function sevkiyatDeriDuzenle(fsId, i) {
 async function sevkiyatDeriKaydet(fsId, i) {
   const s = state.aktifSevkiyatDetay || state.yoneticiSevkiyatlar?.find(x=>x.fsId===fsId) || state.sevkiyatlar?.find(x=>x.fsId===fsId);
   if (!s?.deriler?.[i]) { toast('Paket bulunamadı'); return; }
-  const dm2 = parseFloat(document.getElementById('sd-dm2').value) || 0;
+  const dm2 = dm2Yuvarla(document.getElementById('sd-dm2').value);
   let ft2 = parseFloat(document.getElementById('sd-ft2').value) || 0;
   ft2 = ft2 ? ceyrekYuvarla(ft2) : (dm2 ? ceyrekYuvarla(dm2 / 9.2903) : 0);
   const yeniDeriler = s.deriler.map((x,ix) => ix===i ? {
@@ -4717,11 +4753,13 @@ async function basla() {
       if (kayitli.ekranGecmisi) state.ekranGecmisi = kayitli.ekranGecmisi;
       // Giriş/ilk-kurulum hariç kayıtlı ekrana dön
       const guvenliEkranlar = ['musteri-listesi','toplu-cekim','inceleme','sevkiyat-listesi','sevkiyat-detay','yonetici'];
-      // Yönetici: yarım kalmış çekim yoksa her zaman yönetici paneliyle açılsın
-      const yarimIs = (state.aktifFisler?.length > 0);
-      if (profil.rol === 'YONETICI' && !yarimIs) {
+      // Yönetici HER ZAMAN yönetici paneliyle açılır (yarım çekim varsa taslak korunur)
+      if (profil.rol === 'YONETICI') {
         state.ekran = 'yonetici';
         state.ekranGecmisi = [];
+        if (state.aktifFisler?.length > 0) {
+          toast(`ℹ ${state.aktifFisler.length} kayıtsız fiş taslakta duruyor`, 3000);
+        }
       } else if (kayitli.ekran && guvenliEkranlar.includes(kayitli.ekran)) {
         state.ekran = kayitli.ekran;
       }
